@@ -30,6 +30,7 @@ const (
 	JobStageInitializing   JobStage = "INITIALIZING"
 	JobStageFetchingTree   JobStage = "FETCHING_TREE"
 	JobStageFilteringFiles JobStage = "FILTERING_FILES"
+	JobStageAnalyzingAST   JobStage = "ANALYZING_AST"
 	JobStageParsingAST     JobStage = "PARSING_AST"
 	JobStageBuildingGraph  JobStage = "BUILDING_GRAPH"
 	JobStageChunking       JobStage = "CHUNKING"

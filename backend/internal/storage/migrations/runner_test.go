@@ -19,8 +19,8 @@ func TestLoadMigrations_Embedded(t *testing.T) {
 		t.Fatalf("failed to load embedded migrations: %v", err)
 	}
 
-	if len(list) < 4 {
-		t.Fatalf("expected at least 4 migrations, got %d", len(list))
+	if len(list) < 5 {
+		t.Fatalf("expected at least 5 migrations, got %d", len(list))
 	}
 
 	// Verify versions strictly sorted in ascending order
@@ -31,7 +31,7 @@ func TestLoadMigrations_Embedded(t *testing.T) {
 		}
 	}
 
-	// Verify version 1 is init_schema, version 2 is github_gitstat, version 3 is repository_files, version 4 is active_jobs_partial_index
+	// Verify version 1 is init_schema, version 2 is github_gitstat, version 3 is repository_files, version 4 is active_jobs_partial_index, version 5 is code_symbols
 	if list[0].Version != 1 || list[0].Name != "000001_init_schema" {
 		t.Errorf("expected version 1 to be 000001_init_schema, got: %+v", list[0])
 	}
@@ -43,6 +43,9 @@ func TestLoadMigrations_Embedded(t *testing.T) {
 	}
 	if list[3].Version != 4 || list[3].Name != "000004_active_jobs_partial_index" {
 		t.Errorf("expected version 4 to be 000004_active_jobs_partial_index, got: %+v", list[3])
+	}
+	if list[4].Version != 5 || list[4].Name != "000005_code_symbols" {
+		t.Errorf("expected version 5 to be 000005_code_symbols, got: %+v", list[4])
 	}
 
 	// Verify SQL contents are loaded

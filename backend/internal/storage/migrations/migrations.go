@@ -41,3 +41,13 @@ var ActiveJobsIndexUp string
 //
 //go:embed 000004_active_jobs_partial_index.down.sql
 var ActiveJobsIndexDown string
+
+// CodeSymbolsUp contains the Phase 4 code_symbols schema creation SQL.
+//
+//go:embed 000005_code_symbols.up.sql
+var CodeSymbolsUp string
+
+// CodeSymbolsDown contains the Phase 4 code_symbols schema rollback SQL.
+//
+//go:embed 000005_code_symbols.down.sql
+var CodeSymbolsDown string

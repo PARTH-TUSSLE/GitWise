@@ -5,11 +5,13 @@ type SubsystemNode struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
 	FileCount        int      `json:"fileCount"`
+	SymbolCount      int      `json:"symbolCount,omitempty"`
 	EntryPoint       string   `json:"entryPoint"`
 	Description      string   `json:"description"`
 	Language         string   `json:"language"`
 	Connections      []string `json:"connections"`
 	BeginnerFriendly bool     `json:"beginnerFriendly"`
+	PathPrefix       string   `json:"pathPrefix,omitempty"`
 }
 
 // FeatureTraceStep captures a single execution step in a code path trace.
@@ -33,12 +35,14 @@ type FeatureTrace struct {
 
 // RepoTreeItem models a node in the repository file tree.
 type RepoTreeItem struct {
-	Name     string         `json:"name"`
-	Path     string         `json:"path"`
-	Type     string         `json:"type"` // "file" | "directory"
-	Size     string         `json:"size,omitempty"`
-	Owner    string         `json:"owner,omitempty"`
-	Children []RepoTreeItem `json:"children,omitempty"`
+	Name        string         `json:"name"`
+	Path        string         `json:"path"`
+	Type        string         `json:"type"` // "file" | "directory"
+	Size        string         `json:"size,omitempty"`
+	Language    string         `json:"language,omitempty"`
+	SymbolCount int            `json:"symbolCount,omitempty"`
+	Owner       string         `json:"owner,omitempty"`
+	Children    []RepoTreeItem `json:"children,omitempty"`
 }
 
 // BeginnerFile provides onboarding orientation file pointers.
