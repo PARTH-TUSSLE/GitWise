@@ -369,3 +369,48 @@ func TestRepoHandler_GetJobValidation(t *testing.T) {
 		t.Errorf("expected 503 or 400, got %d", rec.Code)
 	}
 }
+
+func TestRepoHandler_GetSnapshotSymbols(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/snapshots/{commitSha}/symbols", h.GetSnapshotSymbols)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/snapshots/abc1234/symbols", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_GetSubsystems(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/subsystems", h.GetSubsystems)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/subsystems", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_GetTree(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/tree", h.GetTree)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/tree", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+}

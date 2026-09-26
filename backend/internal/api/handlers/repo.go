@@ -176,6 +176,107 @@ func (h *RepoHandler) GetSnapshotFiles(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(files)
 }
 
+// GetSnapshotSymbols handles GET /api/v1/repositories/{owner}/{repo}/snapshots/{commitSha}/symbols
+func (h *RepoHandler) GetSnapshotSymbols(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	commitSha := chi.URLParam(r, "commitSha")
+	pathFilter := r.URL.Query().Get("path")
+
+	if owner == "" || repo == "" || commitSha == "" {
+		http.Error(w, `{"error":"owner, repo, and commitSha are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	symbols, err := h.repoSvc.GetSnapshotSymbols(r.Context(), owner, repo, commitSha, pathFilter)
+	if err != nil {
+		h.logger.Error("Failed to fetch snapshot symbols",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("commit_sha", commitSha),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, `{"error":"Failed to retrieve code symbols"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if symbols == nil {
+		symbols = []domain.CodeSymbol{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(symbols)
+}
+
+// GetSubsystems handles GET /api/v1/repositories/{owner}/{repo}/subsystems
+func (h *RepoHandler) GetSubsystems(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	ref := r.URL.Query().Get("ref")
+
+	if owner == "" || repo == "" {
+		http.Error(w, `{"error":"owner and repo are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	subsystems, err := h.repoSvc.GetSubsystems(r.Context(), owner, repo, ref)
+	if err != nil {
+		h.logger.Warn("Failed to compute subsystems",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("ref", ref),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, `{"error":"Repository snapshot not found or not yet analyzed"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(subsystems)
+}
+
+// GetTree handles GET /api/v1/repositories/{owner}/{repo}/tree
+func (h *RepoHandler) GetTree(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	ref := r.URL.Query().Get("ref")
+
+	if owner == "" || repo == "" {
+		http.Error(w, `{"error":"owner and repo are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	tree, err := h.repoSvc.GetTree(r.Context(), owner, repo, ref)
+	if err != nil {
+		h.logger.Warn("Failed to compute tree",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("ref", ref),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, `{"error":"Repository snapshot not found or not yet analyzed"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(tree)
+}
+
 func (h *RepoHandler) GetRepository(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")

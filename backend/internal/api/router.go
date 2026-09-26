@@ -63,10 +63,13 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		// Telemetry & GITSTAT routes
 		v1.Get("/gitstat/{username}", gitstatH.GetProfile)
 
-		// Repository intelligence & Ingestion routes (Phase 3)
+		// Repository intelligence & Ingestion routes (Phase 3 & Phase 4)
 		v1.Post("/repositories/ingest", repoH.IngestRepository)
 		v1.Get("/repositories/{owner}/{repo}", repoH.GetRepository)
 		v1.Get("/repositories/{owner}/{repo}/snapshots/{commitSha}/files", repoH.GetSnapshotFiles)
+		v1.Get("/repositories/{owner}/{repo}/snapshots/{commitSha}/symbols", repoH.GetSnapshotSymbols)
+		v1.Get("/repositories/{owner}/{repo}/subsystems", repoH.GetSubsystems)
+		v1.Get("/repositories/{owner}/{repo}/tree", repoH.GetTree)
 
 		// Background Jobs & SSE streaming (Phase 3)
 		v1.Get("/jobs/{id}", repoH.GetJob)
