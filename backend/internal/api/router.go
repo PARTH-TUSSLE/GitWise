@@ -39,7 +39,7 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	ghClient := github.NewClient(cfg.GitHubAPIBaseURL, cfg.GitHubToken, logger)
 	gitstatSvc := gitstat.NewService(ghClient, db, logger)
 
-	gitstatH := handlers.NewGitStatHandler(gitstatSvc)
+	gitstatH := handlers.NewGitStatHandler(gitstatSvc, logger)
 	repoH := handlers.NewRepoHandler()
 
 	r.Route("/api/v1", func(v1 chi.Router) {

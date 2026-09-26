@@ -75,13 +75,9 @@ func main() {
 		}
 	}()
 
-	// Auto-apply Phase 1 & Phase 2 database schema migrations
-	if err := db.ApplyMigrations(rootCtx, migrations.InitSchemaUp); err != nil {
-		logger.Error("FATAL: Failed to apply Phase 1 database migrations", slog.String("error", err.Error()))
-		os.Exit(1)
-	}
-	if err := db.ApplyMigrations(rootCtx, migrations.GithubGitstatUp); err != nil {
-		logger.Error("FATAL: Failed to apply Phase 2 database migrations", slog.String("error", err.Error()))
+	// Auto-apply pending database schema migrations in version order
+	if err := migrations.Run(rootCtx, db.DB, logger); err != nil {
+		logger.Error("FATAL: Failed to apply database schema migrations", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 

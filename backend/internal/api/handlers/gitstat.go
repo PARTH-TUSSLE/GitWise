@@ -2,7 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -14,12 +14,17 @@ import (
 
 type GitStatHandler struct {
 	service  *gitstat.Service
+	logger   *slog.Logger
 	profiles map[string]domain.ContributorProfile
 }
 
-func NewGitStatHandler(service *gitstat.Service) *GitStatHandler {
+func NewGitStatHandler(service *gitstat.Service, logger *slog.Logger) *GitStatHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	handler := &GitStatHandler{
 		service:  service,
+		logger:   logger,
 		profiles: make(map[string]domain.ContributorProfile),
 	}
 	handler.initMockProfiles()
@@ -27,18 +32,22 @@ func NewGitStatHandler(service *gitstat.Service) *GitStatHandler {
 }
 
 func (h *GitStatHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
+	username := strings.TrimSpace(chi.URLParam(r, "username"))
 	if username == "" {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "username is required"})
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "bad_request",
+			"message": "Username parameter is required",
+		})
 		return
 	}
 
-	normUser := strings.ToLower(strings.TrimSpace(username))
+	normUser := strings.ToLower(username)
 	refresh := r.URL.Query().Get("refresh") == "true"
 
-	// If live gitstat service is available, query live GitHub data
+	// 1. LIVE SERVICE PATH:
+	// Strictly queries live GitHub client & cache. Never substitutes fabricated or mock data on error.
 	if h.service != nil {
 		profile, err := h.service.GetProfile(r.Context(), username, refresh)
 		if err == nil && profile != nil {
@@ -48,116 +57,60 @@ func (h *GitStatHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// GitHub user missing -> 404
 		if github.IsNotFound(err) {
-			// Check if this is a known curated demo mock profile (e.g. alexr_dev)
-			if mock, exists := h.profiles[normUser]; exists {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(mock)
-				return
-			}
-
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":   "user not found",
-				"message": fmt.Sprintf("GitHub user '%s' was not found or is suspended", username),
+				"error":   "not_found",
+				"message": "GitHub user not found",
 			})
 			return
 		}
 
+		// GitHub rate limited -> 429
 		if github.IsRateLimit(err) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":   "rate limit exceeded",
-				"message": "GitHub API rate limit exceeded. Please configure a GITHUB_TOKEN or retry later.",
+				"error":   "rate_limit_exceeded",
+				"message": "GitHub API rate limit reached. Please retry later or configure authentication.",
 			})
 			return
 		}
 
-		// Non-rate-limit error: check mock profile fallback for demo handles
-		if mock, exists := h.profiles[normUser]; exists {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(mock)
-			return
-		}
+		// Other upstream error: log full detail internally with context, return sanitized message to client
+		h.logger.ErrorContext(r.Context(), "failed to retrieve gitstat profile from upstream",
+			slog.String("username", username),
+			slog.String("error", err.Error()),
+		)
 
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusBadGateway)
 		_ = json.NewEncoder(w).Encode(map[string]string{
-			"error":   "failed to fetch profile",
-			"message": err.Error(),
+			"error":   "upstream_error",
+			"message": "Failed to retrieve developer telemetry from upstream service",
 		})
 		return
 	}
 
-	// Fallback to static mock / dynamic profile when service is nil
-	profile, exists := h.profiles[normUser]
+	// 2. MOCK MODE / DEMO PATH:
+	// Only returns explicitly predefined mock fixtures (alexR_dev, torvalds, gaearon).
+	// Arbitrary usernames NEVER receive generated fake metrics.
+	mock, exists := h.profiles[normUser]
 	if !exists {
-		profile = h.generateDynamicFallback(username)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "not_found",
+			"message": "Contributor profile not found in mock fixtures",
+		})
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(profile)
-}
-
-func (h *GitStatHandler) generateDynamicFallback(username string) domain.ContributorProfile {
-	return domain.ContributorProfile{
-		Username:         username,
-		Name:             fmt.Sprintf("@%s", username),
-		AvatarURL:        fmt.Sprintf("https://github.com/%s.png", username),
-		Title:            "Open Source Contributor",
-		Bio:              "Autonomous developer contributing to open-source software.",
-		Joined:           "2023",
-		Status:           "Active Contributor",
-		PrimaryLanguages: []string{"Go", "TypeScript", "Python"},
-		Metrics: domain.ContributorMetrics{
-			MergedPRs:               12,
-			OpenPRs:                 2,
-			CodeReviewsGiven:        34,
-			ReviewCommentVolume:     88,
-			IssuesOpened:            8,
-			IssuesParticipatedIn:    21,
-			IssuesLinkedToMergedPRs: 10,
-			ActiveRepositories:      3,
-			TotalCommits:            210,
-			LinesAdded:              4500,
-			LinesDeleted:            1200,
-			FilesChanged:            114,
-			ReviewTurnaroundHours:   6.5,
-			MergeSuccessRatePct:     85.0,
-		},
-		Repositories: []domain.ContributorRepository{
-			{
-				Name:        fmt.Sprintf("%s/workspace", username),
-				Description: "Developer workspace and active contributions",
-				Stars:       15,
-				Forks:       4,
-				Language:    "Go",
-				Commits:     84,
-				PRs:         6,
-				Role:        "Maintainer",
-				EvidenceURL: fmt.Sprintf("https://github.com/%s", username),
-			},
-		},
-		RecentDiffs: []domain.RecentDiff{
-			{
-				ID:         "d-init",
-				Repo:       fmt.Sprintf("%s/workspace", username),
-				CommitHash: "a1b2c3d",
-				Message:    "Initial repository scaffold and setup",
-				Added:      120,
-				Deleted:    5,
-				Timestamp:  "Just now",
-				Type:       "COMMIT",
-			},
-		},
-		ActivityWeeks:  generate52WeeksActivity(1),
-		ProvenanceNote: "Synthesized baseline telemetry profile. Live GitHub API sync available in Phase 2.",
-	}
+	_ = json.NewEncoder(w).Encode(mock)
 }
 
 func generate52WeeksActivity(factor int) []domain.ActivityWeek {
@@ -182,7 +135,7 @@ func generate52WeeksActivity(factor int) []domain.ActivityWeek {
 			}
 
 			days[d] = domain.ActivityDay{
-				Date:    fmt.Sprintf("2026-W%02d-%d", w+1, d),
+				Date:    "2026-01-01",
 				Level:   level,
 				Commits: level * 3 * factor,
 				PRs:     map[bool]int{true: 1, false: 0}[level > 2],
@@ -190,7 +143,7 @@ func generate52WeeksActivity(factor int) []domain.ActivityWeek {
 			}
 		}
 		weeks[w] = domain.ActivityWeek{
-			Week: fmt.Sprintf("W%d", w+1),
+			Week: "W",
 			Days: days,
 		}
 	}
@@ -282,49 +235,6 @@ func (h *GitStatHandler) initMockProfiles() {
 				Timestamp:  "14:38:05",
 				Type:       "PR_MERGED",
 			},
-			{
-				ID:         "d2",
-				Repo:       "kubernetes/kubernetes",
-				PRNumber:   intPtr(124580),
-				CommitHash: "c381da2",
-				Message:    "Refactor kube-scheduler pre-filter plugin node score caching to prevent contention",
-				Added:      840,
-				Deleted:    612,
-				Timestamp:  "13:12:44",
-				Type:       "COMMIT",
-			},
-			{
-				ID:         "d3",
-				Repo:       "tokio-rs/tokio",
-				PRNumber:   intPtr(5891),
-				CommitHash: "9a21ef4",
-				Message:    "Review comment: Validate poll_ready backpressure handling in mpsc channel",
-				Added:      0,
-				Deleted:    0,
-				Timestamp:  "11:05:19",
-				Type:       "REVIEW_COMMENT",
-			},
-			{
-				ID:         "d4",
-				Repo:       "vercel/next.js",
-				PRNumber:   intPtr(54821),
-				CommitHash: "3f88be1",
-				Message:    "Merge PR #54821: Fix concurrent server action revalidation race in chunked streaming",
-				Added:      620,
-				Deleted:    140,
-				Timestamp:  "09:41:02",
-				Type:       "PR_MERGED",
-			},
-			{
-				ID:         "d5",
-				Repo:       "kubernetes/kubernetes",
-				CommitHash: "e102f9c",
-				Message:    "Fix boundary check in chunked kubelet pod status watcher; closes issue #801",
-				Added:      45,
-				Deleted:    12,
-				Timestamp:  "Yesterday",
-				Type:       "ISSUE_CLOSED",
-			},
 		},
 		ActivityWeeks:  generate52WeeksActivity(1),
 		ProvenanceNote: "Curated developer profile with complete GitWise mock parity.",
@@ -368,17 +278,6 @@ func (h *GitStatHandler) initMockProfiles() {
 				Role:        "Maintainer",
 				EvidenceURL: "https://github.com/torvalds/linux",
 			},
-			{
-				Name:        "torvalds/subsurface-for-dirk",
-				Description: "Subsurface dive log program",
-				Stars:       1200,
-				Forks:       230,
-				Language:    "C",
-				Commits:     1400,
-				PRs:         440,
-				Role:        "Maintainer",
-				EvidenceURL: "https://github.com/torvalds/subsurface-for-dirk",
-			},
 		},
 		RecentDiffs: []domain.RecentDiff{
 			{
@@ -389,16 +288,6 @@ func (h *GitStatHandler) initMockProfiles() {
 				Added:      8420,
 				Deleted:    5120,
 				Timestamp:  "3h ago",
-				Type:       "PR_MERGED",
-			},
-			{
-				ID:         "t2",
-				Repo:       "torvalds/linux",
-				CommitHash: "7b411d9",
-				Message:    "Merge branch 'x86/urgent' of git://git.kernel.org/pub/scm/linux/kernel/git/tip/tip",
-				Added:      210,
-				Deleted:    85,
-				Timestamp:  "8h ago",
 				Type:       "PR_MERGED",
 			},
 		},
@@ -443,17 +332,6 @@ func (h *GitStatHandler) initMockProfiles() {
 				PRs:         840,
 				Role:        "Core Contributor",
 				EvidenceURL: "https://github.com/facebook/react",
-			},
-			{
-				Name:        "reduxjs/redux",
-				Description: "Predictable state container for JavaScript apps",
-				Stars:       60400,
-				Forks:       15300,
-				Language:    "TypeScript",
-				Commits:     1100,
-				PRs:         420,
-				Role:        "Maintainer",
-				EvidenceURL: "https://github.com/reduxjs/redux",
 			},
 		},
 		RecentDiffs: []domain.RecentDiff{

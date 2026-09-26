@@ -308,10 +308,7 @@ func (s *Service) calculateMetrics(
 				commitCount = 1
 			}
 			totalCommits += commitCount
-			// Approximate line metrics from observed push commits
-			linesAdded += commitCount * 45
-			linesDeleted += commitCount * 18
-			filesChanged += commitCount * 3
+			filesChanged += commitCount
 
 		case "PullRequestReviewEvent":
 			codeReviewsGiven++
@@ -327,11 +324,9 @@ func (s *Service) calculateMetrics(
 		}
 	}
 
-	// Add repos count
+	// Register public repositories
 	for _, r := range repos {
 		activeRepoMap[r.FullName] = true
-		// Base commits estimation from public repo presence
-		totalCommits += int(math.Max(5, float64(r.StargazersCount/2)))
 	}
 
 	if issuesOpened > 0 {
@@ -367,13 +362,42 @@ func (s *Service) calculateMetrics(
 		LinesAdded:              linesAdded,
 		LinesDeleted:            linesDeleted,
 		FilesChanged:            filesChanged,
-		ReviewTurnaroundHours:   3.8,
+		ReviewTurnaroundHours:   0.0,
 		MergeSuccessRatePct:     mergeRate,
 	}
 }
 
 func (s *Service) formatRepositories(username string, repos []github.GHRepo, events []github.GHEvent) []domain.ContributorRepository {
 	result := make([]domain.ContributorRepository, 0, len(repos))
+
+	// Track observed commits and PRs from recent events per repo
+	repoCommits := make(map[string]int)
+	repoPRs := make(map[string]int)
+	for _, e := range events {
+		if e.Repo.Name == "" {
+			continue
+		}
+		normName := strings.ToLower(e.Repo.Name)
+		if e.Type == "PushEvent" {
+			var payload struct {
+				Size    int `json:"size"`
+				Commits []struct {
+					SHA string `json:"sha"`
+				} `json:"commits"`
+			}
+			_ = json.Unmarshal(e.Payload, &payload)
+			cnt := payload.Size
+			if cnt == 0 {
+				cnt = len(payload.Commits)
+			}
+			if cnt == 0 {
+				cnt = 1
+			}
+			repoCommits[normName] += cnt
+		} else if e.Type == "PullRequestEvent" {
+			repoPRs[normName]++
+		}
+	}
 
 	// Sort repos by stars descending
 	sort.Slice(repos, func(i, j int) bool {
@@ -402,14 +426,15 @@ func (s *Service) formatRepositories(username string, repos []github.GHRepo, eve
 			lang = "Go"
 		}
 
+		normRepo := strings.ToLower(r.FullName)
 		result = append(result, domain.ContributorRepository{
 			Name:        r.FullName,
 			Description: desc,
 			Stars:       r.StargazersCount,
 			Forks:       r.ForksCount,
 			Language:    lang,
-			Commits:     int(math.Max(12, float64(r.StargazersCount*2))),
-			PRs:         int(math.Max(2, float64(r.ForksCount/5))),
+			Commits:     repoCommits[normRepo],
+			PRs:         repoPRs[normRepo],
 			Role:        role,
 			EvidenceURL: r.HTMLURL,
 		})
@@ -458,8 +483,8 @@ func (s *Service) formatRecentDiffs(username string, events []github.GHEvent) []
 				Repo:       e.Repo.Name,
 				CommitHash: sha,
 				Message:    msg,
-				Added:      120,
-				Deleted:    45,
+				Added:      0,
+				Deleted:    0,
 				Timestamp:  timeStr,
 				Type:       "COMMIT",
 			})
@@ -497,8 +522,8 @@ func (s *Service) formatRecentDiffs(username string, events []github.GHEvent) []
 				PRNumber:   &num,
 				CommitHash: sha,
 				Message:    fmt.Sprintf("PR #%d: %s", num, payload.PullRequest.Title),
-				Added:      340,
-				Deleted:    90,
+				Added:      0,
+				Deleted:    0,
 				Timestamp:  timeStr,
 				Type:       diffType,
 			})
