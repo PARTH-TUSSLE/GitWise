@@ -30,6 +30,8 @@ type JobManager struct {
 	cancelFunc  context.CancelFunc
 	runningLock sync.Mutex
 	isStarted   bool
+	enqueuedMu  sync.Mutex
+	enqueued    map[uuid.UUID]bool
 }
 
 const (
@@ -56,6 +58,7 @@ func NewJobManager(db *sql.DB, workers int, queueSize int, logger *slog.Logger, 
 		maxWorkers: workers,
 		sseBroker:  sseBroker,
 		handlers:   make(map[domain.JobType]TaskFunc),
+		enqueued:   make(map[uuid.UUID]bool),
 	}
 }
 
@@ -84,11 +87,13 @@ func (jm *JobManager) ReconcileStaleJobs(ctx context.Context) error {
 		return fmt.Errorf("failed to reconcile stale in-flight jobs: %w", err)
 	}
 
-	rows, _ := res.RowsAffected()
-	if rows > 0 {
-		jm.logger.Warn("Reconciled stale in-flight jobs on startup",
-			slog.Int64("abandoned_jobs_reconciled", rows),
-		)
+	if res != nil {
+		rows, _ := res.RowsAffected()
+		if rows > 0 {
+			jm.logger.Warn("Reconciled stale in-flight jobs on startup",
+				slog.Int64("abandoned_jobs_reconciled", rows),
+			)
+		}
 	}
 
 	// Also fail any repository_snapshots that were left in PROCESSING state
@@ -125,10 +130,58 @@ func (jm *JobManager) Start(ctx context.Context) error {
 		go jm.workerLoop(workerCtx, i+1)
 	}
 
+	// 3. Recover persisted QUEUED jobs after workers are active
+	if jm.db != nil {
+		if err := jm.RecoverQueuedJobs(ctx); err != nil {
+			jm.logger.Error("Failed to recover persisted QUEUED jobs during startup", slog.String("error", err.Error()))
+		}
+	}
+
 	jm.logger.Info("JobManager worker pool started",
 		slog.Int("workers", jm.maxWorkers),
 		slog.Int("queue_capacity", cap(jm.jobQueue)),
 	)
+	return nil
+}
+
+// RecoverQueuedJobs finds persisted jobs in QUEUED status and enqueues them into the worker queue.
+func (jm *JobManager) RecoverQueuedJobs(ctx context.Context) error {
+	if jm.db == nil {
+		return errors.New("database is not configured")
+	}
+
+	query := `
+		SELECT id
+		FROM analysis_jobs
+		WHERE status = 'QUEUED'
+		ORDER BY created_at ASC`
+
+	rows, err := jm.db.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to query queued jobs for recovery: %w", err)
+	}
+	defer rows.Close()
+
+	var count int
+	for rows.Next() {
+		var jobID uuid.UUID
+		if err := rows.Scan(&jobID); err != nil {
+			return err
+		}
+
+		if err := jm.Enqueue(ctx, jobID); err != nil {
+			jm.logger.Error("Failed to re-enqueue recovered job",
+				slog.String("job_id", jobID.String()),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			count++
+		}
+	}
+
+	if count > 0 {
+		jm.logger.Info("Recovered persisted QUEUED jobs on startup", slog.Int("count", count))
+	}
 	return nil
 }
 
@@ -150,15 +203,26 @@ func (jm *JobManager) Stop() {
 	jm.logger.Info("JobManager worker pool cleanly stopped")
 }
 
-// Enqueue submits a job ID into the in-process worker queue.
+// Enqueue submits a job ID into the in-process worker queue, preventing duplicate queueing.
 func (jm *JobManager) Enqueue(ctx context.Context, jobID uuid.UUID) error {
+	jm.enqueuedMu.Lock()
+	if jm.enqueued[jobID] {
+		jm.enqueuedMu.Unlock()
+		jm.logger.Debug("Job already enqueued, skipping duplicate enqueue", slog.String("job_id", jobID.String()))
+		return nil
+	}
+
 	select {
 	case <-ctx.Done():
+		jm.enqueuedMu.Unlock()
 		return ctx.Err()
 	case jm.jobQueue <- jobID:
+		jm.enqueued[jobID] = true
+		jm.enqueuedMu.Unlock()
 		jm.logger.Debug("Job enqueued for background execution", slog.String("job_id", jobID.String()))
 		return nil
 	default:
+		jm.enqueuedMu.Unlock()
 		return errors.New("job queue is full, unable to accept job")
 	}
 }
@@ -174,6 +238,10 @@ func (jm *JobManager) workerLoop(ctx context.Context, workerID int) {
 			if !ok {
 				return
 			}
+			jm.enqueuedMu.Lock()
+			delete(jm.enqueued, jobID)
+			jm.enqueuedMu.Unlock()
+
 			jm.executeJob(ctx, jobID, workerID)
 		}
 	}

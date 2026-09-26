@@ -31,3 +31,13 @@ var RepositoryFilesUp string
 //
 //go:embed 000003_repository_files.down.sql
 var RepositoryFilesDown string
+
+// ActiveJobsIndexUp contains the Phase 3 active jobs partial unique index creation SQL.
+//
+//go:embed 000004_active_jobs_partial_index.up.sql
+var ActiveJobsIndexUp string
+
+// ActiveJobsIndexDown contains the Phase 3 active jobs partial unique index rollback SQL.
+//
+//go:embed 000004_active_jobs_partial_index.down.sql
+var ActiveJobsIndexDown string

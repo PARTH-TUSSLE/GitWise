@@ -25,6 +25,17 @@ const (
 	MaxTotalFiles          = 5000
 )
 
+// ErrTreeTruncated is returned when the GitHub Git Data API truncates the tree response.
+var ErrTreeTruncated = errors.New("github git tree response truncated: repository exceeds tree limit")
+
+// IngestionOutcome classifies the completeness of the retrieved repository snapshot.
+type IngestionOutcome string
+
+const (
+	IngestionOutcomeComplete IngestionOutcome = "COMPLETE"
+	IngestionOutcomePartial  IngestionOutcome = "PARTIAL"
+)
+
 // FileEntry represents a processed source code file from a commit snapshot.
 type FileEntry struct {
 	Path       string
@@ -37,10 +48,17 @@ type FileEntry struct {
 	IsBinary   bool
 }
 
+// FetchResult packages the ingested files alongside completeness classification.
+type FetchResult struct {
+	Files        []FileEntry
+	Outcome      IngestionOutcome
+	CappedReason string
+}
+
 // Fetcher defines the interface for repository tree resolution and ingestion.
 type Fetcher interface {
 	ResolveCommitSHA(ctx context.Context, owner, repo, ref string) (string, error)
-	FetchTree(ctx context.Context, owner, repo, commitSHA string) ([]FileEntry, error)
+	FetchTree(ctx context.Context, owner, repo, commitSHA string) (*FetchResult, error)
 }
 
 // GitHubFetcher implements Fetcher against GitHub REST & Git Data APIs.
@@ -127,7 +145,7 @@ type gitTreeItem struct {
 }
 
 // FetchTree queries GitHub Trees API recursively, filters safety bounds, and fetches file contents.
-func (f *GitHubFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA string) ([]FileEntry, error) {
+func (f *GitHubFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA string) (*FetchResult, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/git/trees/%s?recursive=1", f.baseURL, owner, repo, commitSHA)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -151,8 +169,19 @@ func (f *GitHubFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA st
 		return nil, fmt.Errorf("failed to decode git tree: %w", err)
 	}
 
+	if treeResp.Truncated {
+		f.logger.Error("GitHub git tree response was truncated",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("commit_sha", commitSHA),
+		)
+		return nil, ErrTreeTruncated
+	}
+
 	var results []FileEntry
 	var totalSizeBytes int
+	outcome := IngestionOutcomeComplete
+	var cappedReason string
 
 	for _, item := range treeResp.Tree {
 		if item.Type != "blob" {
@@ -168,34 +197,44 @@ func (f *GitHubFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA st
 				slog.String("path", item.Path),
 				slog.Int("size", item.Size),
 			)
+			outcome = IngestionOutcomePartial
+			if cappedReason == "" {
+				cappedReason = fmt.Sprintf("file %s exceeded single file limit of %d bytes", item.Path, MaxSingleFileSizeBytes)
+			}
 			continue
 		}
 
-		totalSizeBytes += item.Size
-		if totalSizeBytes > MaxTotalRepoSizeBytes {
-			f.logger.Warn("Repository exceeded total ingestion size cap, truncating remaining files",
+		if totalSizeBytes+item.Size > MaxTotalRepoSizeBytes {
+			f.logger.Warn("Repository exceeded total ingestion size cap, capping snapshot as partial",
 				slog.Int("total_bytes", totalSizeBytes),
 				slog.Int("max_bytes", MaxTotalRepoSizeBytes),
 			)
+			outcome = IngestionOutcomePartial
+			cappedReason = fmt.Sprintf("repository exceeded total size cap of %d MB", MaxTotalRepoSizeBytes/(1024*1024))
 			break
 		}
 
 		if len(results) >= MaxTotalFiles {
-			f.logger.Warn("Repository exceeded total file count limit, truncating remaining files",
+			f.logger.Warn("Repository exceeded total file count limit, capping snapshot as partial",
 				slog.Int("total_files", len(results)),
+				slog.Int("max_files", MaxTotalFiles),
 			)
+			outcome = IngestionOutcomePartial
+			cappedReason = fmt.Sprintf("repository exceeded total file count limit of %d", MaxTotalFiles)
 			break
 		}
 
 		// Fetch content for eligible file
 		content, isBinary, err := f.fetchBlobContent(ctx, item.URL)
 		if err != nil {
-			f.logger.Warn("Failed to fetch blob content, recording metadata only",
+			f.logger.Error("Failed to fetch blob content, aborting snapshot ingestion",
 				slog.String("path", item.Path),
 				slog.String("error", err.Error()),
 			)
-			continue
+			return nil, fmt.Errorf("failed to fetch blob content for %s: %w", item.Path, err)
 		}
+
+		totalSizeBytes += item.Size
 
 		ext := strings.ToLower(path.Ext(item.Path))
 		lang := DetectLanguage(item.Path)
@@ -219,7 +258,11 @@ func (f *GitHubFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA st
 		})
 	}
 
-	return results, nil
+	return &FetchResult{
+		Files:        results,
+		Outcome:      outcome,
+		CappedReason: cappedReason,
+	}, nil
 }
 
 func (f *GitHubFetcher) fetchBlobContent(ctx context.Context, blobURL string) (string, bool, error) {
@@ -403,8 +446,11 @@ func isHex(s string) bool {
 
 // MockFetcher provides in-memory mock repository file trees for tests.
 type MockFetcher struct {
-	CommitSHA string
-	Files     []FileEntry
+	CommitSHA    string
+	Files        []FileEntry
+	Outcome      IngestionOutcome
+	CappedReason string
+	Err          error
 }
 
 func NewMockFetcher(commitSHA string, files []FileEntry) *MockFetcher {
@@ -414,13 +460,28 @@ func NewMockFetcher(commitSHA string, files []FileEntry) *MockFetcher {
 	return &MockFetcher{
 		CommitSHA: commitSHA,
 		Files:     files,
+		Outcome:   IngestionOutcomeComplete,
 	}
 }
 
 func (m *MockFetcher) ResolveCommitSHA(ctx context.Context, owner, repo, ref string) (string, error) {
+	if m.Err != nil {
+		return "", m.Err
+	}
 	return m.CommitSHA, nil
 }
 
-func (m *MockFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA string) ([]FileEntry, error) {
-	return m.Files, nil
+func (m *MockFetcher) FetchTree(ctx context.Context, owner, repo, commitSHA string) (*FetchResult, error) {
+	if m.Err != nil {
+		return nil, m.Err
+	}
+	outcome := m.Outcome
+	if outcome == "" {
+		outcome = IngestionOutcomeComplete
+	}
+	return &FetchResult{
+		Files:        m.Files,
+		Outcome:      outcome,
+		CappedReason: m.CappedReason,
+	}, nil
 }

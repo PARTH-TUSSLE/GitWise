@@ -74,8 +74,8 @@ func (s *Service) Ingest(ctx context.Context, owner, repoName, ref string) (*dom
 	// 3. Check for existing snapshot
 	existingSnap, err := s.getSnapshot(ctx, repo.ID, commitSHA)
 	if err == nil && existingSnap != nil {
-		if existingSnap.Status == domain.SnapshotStatusReady {
-			// Idempotent: Snapshot already ingested and ready
+		if existingSnap.Status == domain.SnapshotStatusReady || existingSnap.Status == domain.SnapshotStatusPartial {
+			// Idempotent: Snapshot already ingested and ready or partial
 			dummyJob := &domain.AnalysisJob{
 				ID:              uuid.New(),
 				Type:            domain.JobTypeSnapshotIngest,
@@ -88,12 +88,28 @@ func (s *Service) Ingest(ctx context.Context, owner, repoName, ref string) (*dom
 			}
 			return dummyJob, existingSnap, nil
 		}
+
+		// Check if an active job already exists for this snapshot
+		activeJob, err := s.getActiveJobForSnapshot(ctx, existingSnap.ID)
+		if err == nil && activeJob != nil {
+			s.logger.Info("Reusing existing active job for snapshot",
+				slog.String("snapshot_id", existingSnap.ID.String()),
+				slog.String("job_id", activeJob.ID.String()),
+				slog.String("status", string(activeJob.Status)),
+			)
+			return activeJob, existingSnap, nil
+		}
 	}
 
 	// 4. Create or reset snapshot record in QUEUED state
 	snapshot, err := s.createOrResetSnapshot(ctx, repo.ID, commitSHA, ref)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create snapshot record: %w", err)
+	}
+
+	// Double check if an active job was created concurrently
+	if activeJob, err := s.getActiveJobForSnapshot(ctx, snapshot.ID); err == nil && activeJob != nil {
+		return activeJob, snapshot, nil
 	}
 
 	// 5. Create background analysis job
@@ -103,7 +119,7 @@ func (s *Service) Ingest(ctx context.Context, owner, repoName, ref string) (*dom
 	}
 
 	// 6. Enqueue job for background processing
-	if s.jobManager != nil {
+	if s.jobManager != nil && job.Status == domain.JobStatusQueued {
 		if err := s.jobManager.Enqueue(ctx, job.ID); err != nil {
 			s.logger.Error("Failed to enqueue ingestion job", slog.String("job_id", job.ID.String()), slog.String("error", err.Error()))
 			_ = s.failJobDirect(ctx, job.ID, "Queue is full, please retry shortly")
@@ -141,11 +157,14 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageFetchingTree, 15.0, 0, 0, "Fetching git tree from repository")
 
 	// 4. Fetch tree
-	files, err := s.fetcher.FetchTree(ctx, repo.Owner, repo.Name, snapshot.CommitSHA)
+	fetchRes, err := s.fetcher.FetchTree(ctx, repo.Owner, repo.Name, snapshot.CommitSHA)
 	if err != nil {
 		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
+		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
 		return fmt.Errorf("failed to fetch git tree: %w", err)
 	}
+
+	files := fetchRes.Files
 
 	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageFilteringFiles, 50.0, len(files), len(files), "Filtering safety bounds and analyzing files")
 
@@ -173,11 +192,19 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 
 	if err := s.persistFiles(ctx, snapshot.ID, files); err != nil {
 		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
+		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
 		return fmt.Errorf("failed to persist files: %w", err)
 	}
 
-	// 7. Update snapshot with final facts
-	if err := s.finalizeSnapshot(ctx, snapshot.ID, len(files), totalLines, primaryLang); err != nil {
+	// 7. Update snapshot with final facts: READY only if COMPLETE, PARTIAL if capped
+	finalSnapshotStatus := domain.SnapshotStatusReady
+	if fetchRes.Outcome == git.IngestionOutcomePartial {
+		finalSnapshotStatus = domain.SnapshotStatusPartial
+	}
+
+	if err := s.finalizeSnapshot(ctx, snapshot.ID, len(files), totalLines, primaryLang, finalSnapshotStatus); err != nil {
+		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
+		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
 		return fmt.Errorf("failed to finalize snapshot: %w", err)
 	}
 
@@ -252,19 +279,52 @@ func (s *Service) createOrResetSnapshot(ctx context.Context, repoID uuid.UUID, c
 		INSERT INTO repository_snapshots (repository_id, commit_sha, ref_name, status, total_files, total_lines, created_at)
 		VALUES ($1, $2, $3, 'QUEUED', 0, 0, NOW())
 		ON CONFLICT (repository_id, commit_sha) DO UPDATE
-		SET status = 'QUEUED',
+		SET status = CASE 
+		        WHEN repository_snapshots.status = 'FAILED' THEN 'QUEUED' 
+		        ELSE repository_snapshots.status 
+		    END,
 		    ref_name = EXCLUDED.ref_name,
-		    analyzed_at = NULL
+		    analyzed_at = CASE 
+		        WHEN repository_snapshots.status = 'FAILED' THEN NULL 
+		        ELSE repository_snapshots.analyzed_at 
+		    END
 		RETURNING id, repository_id, commit_sha, ref_name, status, total_files, total_lines, primary_language, analyzed_at, expires_at, created_at`
 
 	row := s.db.QueryRowContext(ctx, query, repoID, commitSHA, refName)
 	return scanSnapshot(row)
 }
 
+func (s *Service) getActiveJobForSnapshot(ctx context.Context, snapshotID uuid.UUID) (*domain.AnalysisJob, error) {
+	query := `
+		SELECT id, type, snapshot_id, status, stage, progress_percent, retry_count, created_at, updated_at
+		FROM analysis_jobs
+		WHERE snapshot_id = $1 AND status IN ('QUEUED', 'PROCESSING')
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, query, snapshotID)
+
+	var job domain.AnalysisJob
+	var snapID sql.NullString
+	err := row.Scan(&job.ID, &job.Type, &snapID, &job.Status, &job.Stage, &job.ProgressPercent, &job.RetryCount, &job.CreatedAt, &job.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if snapID.Valid {
+		parsed, _ := uuid.Parse(snapID.String)
+		job.SnapshotID = &parsed
+	}
+	return &job, nil
+}
+
 func (s *Service) createJob(ctx context.Context, snapshotID uuid.UUID) (*domain.AnalysisJob, error) {
 	query := `
 		INSERT INTO analysis_jobs (type, snapshot_id, status, stage, progress_percent, created_at, updated_at)
 		VALUES ('SNAPSHOT_INGEST', $1, 'QUEUED', 'INITIALIZING', 0.0, NOW(), NOW())
+		ON CONFLICT (snapshot_id) WHERE status IN ('QUEUED', 'PROCESSING') AND snapshot_id IS NOT NULL DO NOTHING
 		RETURNING id, type, snapshot_id, status, stage, progress_percent, retry_count, created_at, updated_at`
 
 	row := s.db.QueryRowContext(ctx, query, snapshotID)
@@ -272,6 +332,14 @@ func (s *Service) createJob(ctx context.Context, snapshotID uuid.UUID) (*domain.
 	var job domain.AnalysisJob
 	var snapID sql.NullString
 	err := row.Scan(&job.ID, &job.Type, &snapID, &job.Status, &job.Stage, &job.ProgressPercent, &job.RetryCount, &job.CreatedAt, &job.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Concurrent request won the insert race; reuse the existing active job
+		existingJob, getErr := s.getActiveJobForSnapshot(ctx, snapshotID)
+		if getErr == nil && existingJob != nil {
+			return existingJob, nil
+		}
+		return nil, fmt.Errorf("active job exists but failed to retrieve: %w", getErr)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -288,16 +356,16 @@ func (s *Service) updateSnapshotStatus(ctx context.Context, snapshotID uuid.UUID
 	return err
 }
 
-func (s *Service) finalizeSnapshot(ctx context.Context, snapshotID uuid.UUID, totalFiles, totalLines int, primaryLang string) error {
+func (s *Service) finalizeSnapshot(ctx context.Context, snapshotID uuid.UUID, totalFiles, totalLines int, primaryLang string, status domain.SnapshotStatus) error {
 	query := `
 		UPDATE repository_snapshots
-		SET status = 'READY',
-		    total_files = $2,
-		    total_lines = $3,
-		    primary_language = $4,
+		SET status = $2,
+		    total_files = $3,
+		    total_lines = $4,
+		    primary_language = $5,
 		    analyzed_at = NOW()
 		WHERE id = $1`
-	_, err := s.db.ExecContext(ctx, query, snapshotID, totalFiles, totalLines, primaryLang)
+	_, err := s.db.ExecContext(ctx, query, snapshotID, string(status), totalFiles, totalLines, primaryLang)
 	return err
 }
 

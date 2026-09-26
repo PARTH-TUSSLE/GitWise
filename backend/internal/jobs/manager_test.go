@@ -71,3 +71,28 @@ func TestJobManager_ContextCancellation(t *testing.T) {
 		t.Fatal("expected context cancellation error, got nil")
 	}
 }
+
+func TestJobManager_DuplicateEnqueue(t *testing.T) {
+	jm := jobs.NewJobManager(nil, 1, 5, nil, nil)
+	ctx := context.Background()
+	jobID := uuid.New()
+
+	if err := jm.Enqueue(ctx, jobID); err != nil {
+		t.Fatalf("first enqueue failed: %v", err)
+	}
+
+	// Second enqueue with exact same job ID should be suppressed cleanly without error
+	if err := jm.Enqueue(ctx, jobID); err != nil {
+		t.Fatalf("duplicate enqueue should succeed as no-op: %v", err)
+	}
+}
+
+func TestJobManager_RecoverQueuedJobs_NilDB(t *testing.T) {
+	jm := jobs.NewJobManager(nil, 1, 5, nil, nil)
+	ctx := context.Background()
+
+	err := jm.RecoverQueuedJobs(ctx)
+	if err == nil {
+		t.Fatal("expected error with nil DB, got nil")
+	}
+}
