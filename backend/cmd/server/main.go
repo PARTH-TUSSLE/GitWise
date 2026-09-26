@@ -65,7 +65,6 @@ func main() {
 	db, err := postgres.New(rootCtx, cfg.DatabaseURL, logger)
 	if err != nil {
 		logger.Error("FATAL: Failed to connect to PostgreSQL database",
-			slog.String("database_url", cfg.DatabaseURL),
 			slog.String("error", err.Error()),
 		)
 		os.Exit(1)

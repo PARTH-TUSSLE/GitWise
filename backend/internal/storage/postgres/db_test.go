@@ -17,10 +17,13 @@ func TestPostgres_ConnectionFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	// Invalid port should fail clearly without hiding error or panicking
-	_, err := postgres.New(ctx, "postgres://invalid:invalid@localhost:59999/invalid?sslmode=disable", logger)
+	// Invalid port should fail clearly, close sql.DB, and return a nil *DB instance
+	db, err := postgres.New(ctx, "postgres://invalid:invalid@localhost:59999/invalid?sslmode=disable", logger)
 	if err == nil {
 		t.Fatal("expected error connecting to non-existent postgres instance, got nil")
+	}
+	if db != nil {
+		t.Errorf("expected db to be nil on connection failure, got: %v", db)
 	}
 }
 

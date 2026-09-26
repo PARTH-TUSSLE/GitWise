@@ -7,24 +7,19 @@ import { apiFetch } from "./client";
 
 /**
  * Retrieves contributor telemetry profile.
- * Respects NEXT_PUBLIC_API_MODE (mock vs live) while preserving contract parity.
+ * - mock mode: returns local mock fixtures
+ * - live mode: strictly queries Go backend API and propagates any errors
  */
 export async function fetchContributorProfile(username: string): Promise<ContributorProfile> {
-  const normUser = username.toLowerCase();
-
   if (isLiveMode()) {
-    try {
-      const data = await apiFetch<ContributorProfile>(
-        `/api/v1/gitstat/${encodeURIComponent(username)}`,
-        { cache: "no-store" }
-      );
-      return data;
-    } catch (err) {
-      console.warn(`[GitWise Live API] Failed to fetch gitstat for ${username}, falling back to mock:`, err);
-    }
+    return await apiFetch<ContributorProfile>(
+      `/api/v1/gitstat/${encodeURIComponent(username)}`,
+      { cache: "no-store" }
+    );
   }
 
-  // Mock mode / fallback
+  // Mock mode: local fixtures only
+  const normUser = username.toLowerCase();
   const mock =
     CONTRIBUTORS[normUser] ||
     CONTRIBUTORS["alexr_dev"] ||

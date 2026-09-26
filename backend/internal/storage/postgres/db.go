@@ -31,7 +31,8 @@ func New(ctx context.Context, connStr string, logger *slog.Logger) (*DB, error) 
 	defer cancel()
 
 	if err := db.PingContext(pingCtx); err != nil {
-		return &DB{DB: db, logger: logger}, fmt.Errorf("database ping failed: %w", err)
+		_ = db.Close()
+		return nil, fmt.Errorf("database ping failed: %w", err)
 	}
 
 	logger.Info("Connected to PostgreSQL successfully")

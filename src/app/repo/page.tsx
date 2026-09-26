@@ -23,17 +23,26 @@ export default function RepoExplorerPage() {
     REPOSITORIES["vercel/next.js"]
   );
 
+  const [loadError, setLoadError] = useState<string | null>(null);
+
   useEffect(() => {
     let isCancelled = false;
     const parts = currentRepoKey.split("/");
     const owner = parts[0] || "vercel";
     const repo = parts[1] || "next.js";
 
-    fetchRepository(owner, repo).then((data) => {
-      if (!isCancelled && data) {
-        setCurrentRepo(data);
-      }
-    });
+    setLoadError(null);
+    fetchRepository(owner, repo)
+      .then((data) => {
+        if (!isCancelled && data) {
+          setCurrentRepo(data);
+        }
+      })
+      .catch((err) => {
+        if (!isCancelled) {
+          setLoadError(err instanceof Error ? err.message : "Failed to load repository");
+        }
+      });
 
     return () => {
       isCancelled = true;
@@ -92,6 +101,16 @@ export default function RepoExplorerPage() {
         onSwitchToGitStat={() => router.push("/")}
         onHelp={() => setActiveModalFile("README.md")}
       />
+
+      {/* Live API Error Notice */}
+      {loadError && (
+        <div className="border border-[#ef4444] bg-[#ef4444]/10 text-[#fca5a5] px-3 py-2 text-xs flex items-center justify-between">
+          <span>[LIVE API ERROR] {loadError}</span>
+          <button onClick={() => setLoadError(null)} className="text-[#a3a3a3] hover:text-[#fafafa]">
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* 2. Main 3-Column Compiler Workbench Layout */}
       <div className={`grid grid-cols-1 lg:grid-cols-12 gap-3 flex-1 transition-opacity duration-200 ${isRefreshing ? "opacity-40" : "opacity-100"}`}>
