@@ -3,6 +3,7 @@ package typescript_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/gitwise/backend/internal/analysis/typescript"
@@ -201,5 +202,147 @@ export class Chaotic {
 	}
 	if !foundValid {
 		t.Error("expected ValidOne extracted despite trailing syntax chaos")
+	}
+}
+
+func TestTypeScriptAnalyzer_ClassMethodFalsePositives(t *testing.T) {
+	code := `
+class Foo {
+    run() {
+        helper();
+        doSomething();
+    }
+}
+`
+	analyzer := typescript.NewTypeScriptAnalyzer()
+	res, err := analyzer.AnalyzeFile(context.Background(), "Foo.ts", code)
+	if err != nil {
+		t.Fatalf("unexpected error analyzing Foo.ts: %v", err)
+	}
+
+	var methodNames []string
+	for _, s := range res.Symbols {
+		if s.Kind == domain.SymbolKindMethod {
+			methodNames = append(methodNames, s.Name)
+		}
+	}
+
+	if len(methodNames) != 1 || methodNames[0] != "Foo.run" {
+		t.Fatalf("expected strictly ['Foo.run'] method, got: %v", methodNames)
+	}
+
+	// Verify no false positive symbols named helper or doSomething
+	for _, s := range res.Symbols {
+		if s.Name == "helper" || s.Name == "doSomething" || s.Name == "Foo.helper" || s.Name == "Foo.doSomething" {
+			t.Errorf("false positive symbol emitted: %s (%v)", s.Name, s.Kind)
+		}
+	}
+}
+
+func TestTypeScriptAnalyzer_MultipleMethodsAndNestedCalls(t *testing.T) {
+	code := `
+function standaloneFunc() {
+    helper();
+    doSomething();
+}
+
+class Service {
+    constructor(private client: any) {
+        this.init();
+    }
+
+    public start(): void {
+        obj.run();
+        items.forEach((item) => {
+            nestedCall();
+        });
+    }
+
+    public stop(): void {
+        cleanup();
+    }
+}
+`
+	analyzer := typescript.NewTypeScriptAnalyzer()
+	res, err := analyzer.AnalyzeFile(context.Background(), "Service.ts", code)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	expectedMethods := map[string]bool{
+		"Service.constructor": true,
+		"Service.start":       true,
+		"Service.stop":        true,
+	}
+
+	for _, s := range res.Symbols {
+		if s.Kind == domain.SymbolKindMethod {
+			if !expectedMethods[s.Name] {
+				t.Errorf("unexpected method symbol emitted: %s", s.Name)
+			}
+			delete(expectedMethods, s.Name)
+		}
+	}
+
+	for missing := range expectedMethods {
+		t.Errorf("expected method %s was not emitted", missing)
+	}
+
+	// Verify standalone function
+	var foundStandalone bool
+	for _, s := range res.Symbols {
+		if s.Name == "standaloneFunc" && s.Kind == domain.SymbolKindFunction {
+			foundStandalone = true
+		}
+		// Disallowed false positives
+		if s.Name == "helper" || s.Name == "doSomething" || s.Name == "obj.run" || s.Name == "nestedCall" || s.Name == "cleanup" {
+			t.Errorf("call expression emitted as symbol: %s (%v)", s.Name, s.Kind)
+		}
+	}
+	if !foundStandalone {
+		t.Error("expected standaloneFunc function to be detected")
+	}
+}
+
+func TestTypeScriptAnalyzer_LongLine_NoTruncation(t *testing.T) {
+	// Generate a line exceeding 64KB (bufio.Scanner default buffer limit is 64KB)
+	longComment := "// " + strings.Repeat("A", 70000) + "\n"
+	code := `export function BeforeLongLine() { return 1; }
+` + longComment + `export function AfterLongLine() { return 2; }
+`
+
+	analyzer := typescript.NewTypeScriptAnalyzer()
+	res, err := analyzer.AnalyzeFile(context.Background(), "longline.ts", code)
+	if err != nil {
+		t.Fatalf("unexpected error processing long line: %v", err)
+	}
+
+	var foundBefore, foundAfter bool
+	for _, s := range res.Symbols {
+		if s.Name == "BeforeLongLine" {
+			foundBefore = true
+		}
+		if s.Name == "AfterLongLine" {
+			foundAfter = true
+		}
+	}
+
+	if !foundBefore {
+		t.Error("expected symbol BeforeLongLine to be detected")
+	}
+	if !foundAfter {
+		t.Error("expected symbol AfterLongLine after 70KB line to be detected (failed due to truncation)")
+	}
+}
+
+func TestTypeScriptAnalyzer_ContextCancellation(t *testing.T) {
+	analyzer := typescript.NewTypeScriptAnalyzer()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	code := `class Foo { run() { helper(); } }`
+	_, err := analyzer.AnalyzeFile(ctx, "Foo.ts", code)
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
 	}
 }

@@ -1,7 +1,6 @@
 package typescript
 
 import (
-	"bufio"
 	"context"
 	"regexp"
 	"strings"
@@ -42,7 +41,7 @@ func (a *TypeScriptAnalyzer) Capability() analysis.CapabilityReport {
 			"ESM (import ... from) and CommonJS (require(...)) import extraction",
 			"Exported and local function declaration extraction",
 			"Arrow function variable assignment extraction",
-			"Class declaration and method extraction",
+			"Class declaration, constructor, and method extraction",
 			"TypeScript interface and type alias extraction",
 			"1-indexed line range tracking via balanced brace scanning",
 		},
@@ -76,11 +75,15 @@ var (
 	// type alias: export type Name = ...
 	typeDeclRegex = regexp.MustCompile(`(?m)^(?:export\s+)?type\s+([a-zA-Z0-9_$]+)\s*(?:<[^>]+>)?\s*=`)
 
-	// class method inside class body: (public|private|async|...)* name(...) {
-	methodDeclRegex = regexp.MustCompile(`^\s*(?:(?:public|private|protected|static|override|readonly|async|get|set)\s+)*([a-zA-Z0-9_$]+)\s*(?:<[^>]+>)?\s*\((?:[^)]|\n)*\)\s*(?::\s*[^{]+)?\s*\{?`)
+	// class method inside class body: (public|private|async|...)* name(...)
+	methodDeclRegex = regexp.MustCompile(`^\s*(?:(?:public|private|protected|static|override|readonly|async|get|set)\s+)*([a-zA-Z0-9_$]+)\s*(?:<[^>]+>)?\s*\((?:[^)]|\n)*\)\s*(?::\s*[^{;]+)?`)
 )
 
 func (a *TypeScriptAnalyzer) AnalyzeFile(ctx context.Context, filePath, content string) (*analysis.FileAnalysisResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if strings.TrimSpace(content) == "" {
 		return &analysis.FileAnalysisResult{
 			Symbols: nil,
@@ -135,26 +138,46 @@ func (a *TypeScriptAnalyzer) AnalyzeFile(ctx context.Context, filePath, content 
 		}
 
 		// Update brace count for line
-		openBraces := strings.Count(line, "{")
-		closeBraces := strings.Count(line, "}")
+		openBraces, closeBraces := countBraces(line)
 
-		// If currently inside a class body, look for methods
+		// If currently inside a class body, look for methods only at the class member depth
 		if currentClass != nil {
-			if methodMatch := methodDeclRegex.FindStringSubmatch(line); len(methodMatch) > 1 {
-				mName := methodMatch[1]
-				// Avoid keywords like if, for, while, switch, constructor (or include constructor)
-				if !isControlFlowKeyword(mName) {
-					endMethodLine := findBlockEnd(lines, i)
-					isExported := currentClass.IsExported // inherits class visibility
-					sig := cleanSignature(trimmed)
-					result.Symbols = append(result.Symbols, analysis.RawSymbol{
-						Name:       currentClass.Name + "." + mName,
-						Kind:       domain.SymbolKindMethod,
-						StartLine:  lineNum,
-						EndLine:    endMethodLine,
-						Signature:  sig,
-						IsExported: isExported,
-					})
+			if currentBraceDepth == classBraceDepth+1 {
+				if methodMatch := methodDeclRegex.FindStringSubmatch(line); len(methodMatch) > 1 {
+					mName := methodMatch[1]
+					if !isReservedKeyword(mName) {
+						// A method declaration must have a body opening { (on this line or following non-empty line)
+						// or be an abstract/declare method. Ordinary function calls ending in ; without abstract/body
+						// are statements or expressions, not method declarations.
+						isAbstract := strings.Contains(line, "abstract")
+						hasBrace := openBraces > 0
+						if !hasBrace && !isAbstract && !strings.Contains(line, ";") {
+							for j := i + 1; j < totalLines; j++ {
+								trimmedNext := strings.TrimSpace(lines[j])
+								if trimmedNext == "" || strings.HasPrefix(trimmedNext, "//") {
+									continue
+								}
+								if strings.HasPrefix(trimmedNext, "{") {
+									hasBrace = true
+								}
+								break
+							}
+						}
+
+						if hasBrace || isAbstract {
+							endMethodLine := findBlockEnd(lines, i)
+							isExported := currentClass.IsExported // inherits class visibility
+							sig := cleanSignature(trimmed)
+							result.Symbols = append(result.Symbols, analysis.RawSymbol{
+								Name:       currentClass.Name + "." + mName,
+								Kind:       domain.SymbolKindMethod,
+								StartLine:  lineNum,
+								EndLine:    endMethodLine,
+								Signature:  sig,
+								IsExported: isExported,
+							})
+						}
+					}
 				}
 			}
 
@@ -262,12 +285,53 @@ func (a *TypeScriptAnalyzer) AnalyzeFile(ctx context.Context, filePath, content 
 }
 
 func splitLines(content string) []string {
-	var lines []string
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
+	return strings.Split(content, "\n")
+}
+
+func countBraces(line string) (open, close int) {
+	inDouble := false
+	inSingle := false
+	inBacktick := false
+	escaped := false
+
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == '"' && !inSingle && !inBacktick {
+			inDouble = !inDouble
+			continue
+		}
+		if ch == '\'' && !inDouble && !inBacktick {
+			inSingle = !inSingle
+			continue
+		}
+		if ch == '`' && !inDouble && !inSingle {
+			inBacktick = !inBacktick
+			continue
+		}
+		if inDouble || inSingle || inBacktick {
+			continue
+		}
+		// Skip remainder on inline single-line comment
+		if ch == '/' && i+1 < len(line) && line[i+1] == '/' {
+			break
+		}
+		if ch == '{' {
+			open++
+		} else if ch == '}' {
+			close++
+		}
 	}
-	return lines
+	return open, close
 }
 
 func findBlockEnd(lines []string, startIdx int) int {
@@ -275,18 +339,12 @@ func findBlockEnd(lines []string, startIdx int) int {
 	foundOpen := false
 
 	for i := startIdx; i < len(lines); i++ {
-		line := lines[i]
-		for _, ch := range line {
-			if ch == '{' {
-				braceDepth++
-				foundOpen = true
-			} else if ch == '}' {
-				braceDepth--
-				if foundOpen && braceDepth <= 0 {
-					return i + 1
-				}
-			}
+		open, close := countBraces(lines[i])
+		braceDepth += open
+		if open > 0 {
+			foundOpen = true
 		}
+		braceDepth -= close
 		if foundOpen && braceDepth <= 0 {
 			return i + 1
 		}
@@ -318,9 +376,12 @@ func cleanSignature(line string) string {
 	return sig
 }
 
-func isControlFlowKeyword(word string) bool {
+func isReservedKeyword(word string) bool {
 	switch word {
-	case "if", "for", "while", "do", "switch", "case", "catch", "return", "throw":
+	case "if", "for", "while", "do", "switch", "case", "catch", "return", "throw",
+		"new", "typeof", "instanceof", "delete", "void", "await", "yield",
+		"import", "export", "super", "this", "function", "class", "interface",
+		"type", "const", "let", "var", "default", "from", "as", "of", "in":
 		return true
 	default:
 		return false
