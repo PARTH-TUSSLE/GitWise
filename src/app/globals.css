@@ -1,0 +1,667 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ShadCN-style Global CSS Variables & Theme Presets (Dual-Tone & Monochrome) */
+:root,
+[data-theme="crimson-cyan"] {
+  --theme-name: "crimson-cyan";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Crimson Rust */
+  --accent: #f43f5e;
+  --accent-rgb: 244, 63, 94;
+  --accent-dim: #e11d48;
+  --accent-subtle: rgba(244, 63, 94, 0.08);
+  --accent-soft: rgba(244, 63, 94, 0.14);
+  --accent-muted: rgba(244, 63, 94, 0.24);
+  --accent-border: rgba(244, 63, 94, 0.35);
+
+  /* Secondary Contrasting Accent: Electric Cyan */
+  --accent-secondary: #06b6d4;
+  --accent-secondary-rgb: 6, 182, 212;
+  --accent-secondary-dim: #0891b2;
+  --accent-secondary-subtle: rgba(6, 182, 212, 0.08);
+  --accent-secondary-soft: rgba(6, 182, 212, 0.14);
+  --accent-secondary-muted: rgba(6, 182, 212, 0.24);
+  --accent-secondary-border: rgba(6, 182, 212, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #f43f5e;
+  --selection-text: #050505;
+  --signal: #06b6d4;
+  --signal-rgb: 6, 182, 212;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="amber-emerald"] {
+  --theme-name: "amber-emerald";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Phosphor Amber */
+  --accent: #fbbf24;
+  --accent-rgb: 251, 191, 36;
+  --accent-dim: #d97706;
+  --accent-subtle: rgba(251, 191, 36, 0.08);
+  --accent-soft: rgba(251, 191, 36, 0.14);
+  --accent-muted: rgba(251, 191, 36, 0.24);
+  --accent-border: rgba(251, 191, 36, 0.35);
+
+  /* Secondary Contrasting Accent: Matrix Emerald */
+  --accent-secondary: #10b981;
+  --accent-secondary-rgb: 16, 185, 129;
+  --accent-secondary-dim: #059669;
+  --accent-secondary-subtle: rgba(16, 185, 129, 0.08);
+  --accent-secondary-soft: rgba(16, 185, 129, 0.14);
+  --accent-secondary-muted: rgba(16, 185, 129, 0.24);
+  --accent-secondary-border: rgba(16, 185, 129, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #fbbf24;
+  --selection-text: #050505;
+  --signal: #10b981;
+  --signal-rgb: 16, 185, 129;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="cobalt-orange"] {
+  --theme-name: "cobalt-orange";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Electric Cobalt */
+  --accent: #38bdf8;
+  --accent-rgb: 56, 189, 248;
+  --accent-dim: #0284c7;
+  --accent-subtle: rgba(56, 189, 248, 0.08);
+  --accent-soft: rgba(56, 189, 248, 0.14);
+  --accent-muted: rgba(56, 189, 248, 0.24);
+  --accent-border: rgba(56, 189, 248, 0.35);
+
+  /* Secondary Contrasting Accent: Solar Flare */
+  --accent-secondary: #fb923c;
+  --accent-secondary-rgb: 251, 146, 60;
+  --accent-secondary-dim: #ea580c;
+  --accent-secondary-subtle: rgba(251, 146, 60, 0.08);
+  --accent-secondary-soft: rgba(251, 146, 60, 0.14);
+  --accent-secondary-muted: rgba(251, 146, 60, 0.24);
+  --accent-secondary-border: rgba(251, 146, 60, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #38bdf8;
+  --selection-text: #050505;
+  --signal: #fb923c;
+  --signal-rgb: 251, 146, 60;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="amethyst-gold"] {
+  --theme-name: "amethyst-gold";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Cyber Amethyst */
+  --accent: #a855f7;
+  --accent-rgb: 168, 85, 247;
+  --accent-dim: #9333ea;
+  --accent-subtle: rgba(168, 85, 247, 0.08);
+  --accent-soft: rgba(168, 85, 247, 0.14);
+  --accent-muted: rgba(168, 85, 247, 0.24);
+  --accent-border: rgba(168, 85, 247, 0.35);
+
+  /* Secondary Contrasting Accent: Laser Gold */
+  --accent-secondary: #f59e0b;
+  --accent-secondary-rgb: 245, 158, 11;
+  --accent-secondary-dim: #d97706;
+  --accent-secondary-subtle: rgba(245, 158, 11, 0.08);
+  --accent-secondary-soft: rgba(245, 158, 11, 0.14);
+  --accent-secondary-muted: rgba(245, 158, 11, 0.24);
+  --accent-secondary-border: rgba(245, 158, 11, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #a855f7;
+  --selection-text: #050505;
+  --signal: #f59e0b;
+  --signal-rgb: 245, 158, 11;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="matrix-crimson"] {
+  --theme-name: "matrix-crimson";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Terminal Emerald */
+  --accent: #10b981;
+  --accent-rgb: 16, 185, 129;
+  --accent-dim: #059669;
+  --accent-subtle: rgba(16, 185, 129, 0.08);
+  --accent-soft: rgba(16, 185, 129, 0.14);
+  --accent-muted: rgba(16, 185, 129, 0.24);
+  --accent-border: rgba(16, 185, 129, 0.35);
+
+  /* Secondary Contrasting Accent: Fault Red */
+  --accent-secondary: #f43f5e;
+  --accent-secondary-rgb: 244, 63, 94;
+  --accent-secondary-dim: #e11d48;
+  --accent-secondary-subtle: rgba(244, 63, 94, 0.08);
+  --accent-secondary-soft: rgba(244, 63, 94, 0.14);
+  --accent-secondary-muted: rgba(244, 63, 94, 0.24);
+  --accent-secondary-border: rgba(244, 63, 94, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #10b981;
+  --selection-text: #050505;
+  --signal: #f43f5e;
+  --signal-rgb: 244, 63, 94;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="fuchsia-cyan"] {
+  --theme-name: "fuchsia-cyan";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Hyper Fuchsia */
+  --accent: #ec4899;
+  --accent-rgb: 236, 72, 153;
+  --accent-dim: #db2777;
+  --accent-subtle: rgba(236, 72, 153, 0.08);
+  --accent-soft: rgba(236, 72, 153, 0.14);
+  --accent-muted: rgba(236, 72, 153, 0.24);
+  --accent-border: rgba(236, 72, 153, 0.35);
+
+  /* Secondary Contrasting Accent: Arctic Cyan */
+  --accent-secondary: #22d3ee;
+  --accent-secondary-rgb: 34, 211, 238;
+  --accent-secondary-dim: #0891b2;
+  --accent-secondary-subtle: rgba(34, 211, 238, 0.08);
+  --accent-secondary-soft: rgba(34, 211, 238, 0.14);
+  --accent-secondary-muted: rgba(34, 211, 238, 0.24);
+  --accent-secondary-border: rgba(34, 211, 238, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #ec4899;
+  --selection-text: #050505;
+  --signal: #22d3ee;
+  --signal-rgb: 34, 211, 238;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="titanium-gold"] {
+  --theme-name: "titanium-gold";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+
+  /* Primary Accent: Titanium Monochrome */
+  --accent: #e4e4e7;
+  --accent-rgb: 228, 228, 231;
+  --accent-dim: #a1a1aa;
+  --accent-subtle: rgba(228, 228, 231, 0.08);
+  --accent-soft: rgba(228, 228, 231, 0.14);
+  --accent-muted: rgba(228, 228, 231, 0.24);
+  --accent-border: rgba(228, 228, 231, 0.35);
+
+  /* Secondary Contrasting Accent: Hazard Gold */
+  --accent-secondary: #eab308;
+  --accent-secondary-rgb: 234, 179, 8;
+  --accent-secondary-dim: #ca8a04;
+  --accent-secondary-subtle: rgba(234, 179, 8, 0.08);
+  --accent-secondary-soft: rgba(234, 179, 8, 0.14);
+  --accent-secondary-muted: rgba(234, 179, 8, 0.24);
+  --accent-secondary-border: rgba(234, 179, 8, 0.35);
+
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #eab308;
+  --selection-text: #050505;
+  --signal: #eab308;
+  --signal-rgb: 234, 179, 8;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+/* Classic Single-Tone Presets */
+[data-theme="rose"] {
+  --theme-name: "rose";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+  --accent: #f43f5e;
+  --accent-rgb: 244, 63, 94;
+  --accent-dim: #e11d48;
+  --accent-subtle: rgba(244, 63, 94, 0.08);
+  --accent-soft: rgba(244, 63, 94, 0.14);
+  --accent-muted: rgba(244, 63, 94, 0.24);
+  --accent-border: rgba(244, 63, 94, 0.35);
+  --accent-secondary: #f43f5e;
+  --accent-secondary-rgb: 244, 63, 94;
+  --accent-secondary-subtle: rgba(244, 63, 94, 0.08);
+  --accent-secondary-soft: rgba(244, 63, 94, 0.14);
+  --accent-secondary-border: rgba(244, 63, 94, 0.35);
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #f43f5e;
+  --selection-text: #050505;
+  --signal: #f43f5e;
+  --signal-rgb: 244, 63, 94;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="amber"] {
+  --theme-name: "amber";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+  --accent: #fbbf24;
+  --accent-rgb: 251, 191, 36;
+  --accent-dim: #d97706;
+  --accent-subtle: rgba(251, 191, 36, 0.08);
+  --accent-soft: rgba(251, 191, 36, 0.14);
+  --accent-muted: rgba(251, 191, 36, 0.24);
+  --accent-border: rgba(251, 191, 36, 0.35);
+  --accent-secondary: #fbbf24;
+  --accent-secondary-rgb: 251, 191, 36;
+  --accent-secondary-subtle: rgba(251, 191, 36, 0.08);
+  --accent-secondary-soft: rgba(251, 191, 36, 0.14);
+  --accent-secondary-border: rgba(251, 191, 36, 0.35);
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #fbbf24;
+  --selection-text: #050505;
+  --signal: #fbbf24;
+  --signal-rgb: 251, 191, 36;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="emerald"] {
+  --theme-name: "emerald";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+  --accent: #10b981;
+  --accent-rgb: 16, 185, 129;
+  --accent-dim: #059669;
+  --accent-subtle: rgba(16, 185, 129, 0.08);
+  --accent-soft: rgba(16, 185, 129, 0.14);
+  --accent-muted: rgba(16, 185, 129, 0.24);
+  --accent-border: rgba(16, 185, 129, 0.35);
+  --accent-secondary: #10b981;
+  --accent-secondary-rgb: 16, 185, 129;
+  --accent-secondary-subtle: rgba(16, 185, 129, 0.08);
+  --accent-secondary-soft: rgba(16, 185, 129, 0.14);
+  --accent-secondary-border: rgba(16, 185, 129, 0.35);
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #10b981;
+  --selection-text: #050505;
+  --signal: #10b981;
+  --signal-rgb: 16, 185, 129;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="cyan"] {
+  --theme-name: "cyan";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+  --accent: #06b6d4;
+  --accent-rgb: 6, 182, 212;
+  --accent-dim: #0891b2;
+  --accent-subtle: rgba(6, 182, 212, 0.08);
+  --accent-soft: rgba(6, 182, 212, 0.14);
+  --accent-muted: rgba(6, 182, 212, 0.24);
+  --accent-border: rgba(6, 182, 212, 0.35);
+  --accent-secondary: #06b6d4;
+  --accent-secondary-rgb: 6, 182, 212;
+  --accent-secondary-subtle: rgba(6, 182, 212, 0.08);
+  --accent-secondary-soft: rgba(6, 182, 212, 0.14);
+  --accent-secondary-border: rgba(6, 182, 212, 0.35);
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #06b6d4;
+  --selection-text: #050505;
+  --signal: #06b6d4;
+  --signal-rgb: 6, 182, 212;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="violet"] {
+  --theme-name: "violet";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+  --accent: #a855f7;
+  --accent-rgb: 168, 85, 247;
+  --accent-dim: #9333ea;
+  --accent-subtle: rgba(168, 85, 247, 0.08);
+  --accent-soft: rgba(168, 85, 247, 0.14);
+  --accent-muted: rgba(168, 85, 247, 0.24);
+  --accent-border: rgba(168, 85, 247, 0.35);
+  --accent-secondary: #a855f7;
+  --accent-secondary-rgb: 168, 85, 247;
+  --accent-secondary-subtle: rgba(168, 85, 247, 0.08);
+  --accent-secondary-soft: rgba(168, 85, 247, 0.14);
+  --accent-secondary-border: rgba(168, 85, 247, 0.35);
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #a855f7;
+  --selection-text: #050505;
+  --signal: #a855f7;
+  --signal-rgb: 168, 85, 247;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+[data-theme="zinc"] {
+  --theme-name: "zinc";
+  --background: #050505;
+  --foreground: #fafafa;
+  --muted: #a3a3a3;
+  --muted-dim: #737373;
+  --border: #262626;
+  --border-bright: #3f3f3f;
+  --border-subtle: #262626;
+  --border-rgb: 38, 38, 38;
+  --accent: #e4e4e7;
+  --accent-rgb: 228, 228, 231;
+  --accent-dim: #a1a1aa;
+  --accent-subtle: rgba(228, 228, 231, 0.08);
+  --accent-soft: rgba(228, 228, 231, 0.14);
+  --accent-muted: rgba(228, 228, 231, 0.24);
+  --accent-border: rgba(228, 228, 231, 0.35);
+  --accent-secondary: #e4e4e7;
+  --accent-secondary-rgb: 228, 228, 231;
+  --accent-secondary-subtle: rgba(228, 228, 231, 0.08);
+  --accent-secondary-soft: rgba(228, 228, 231, 0.14);
+  --accent-secondary-border: rgba(228, 228, 231, 0.35);
+  --bg-ground: #050505;
+  --bg-panel: #0c0c0c;
+  --selection-bg: #e4e4e7;
+  --selection-text: #050505;
+  --signal: #e4e4e7;
+  --signal-rgb: 228, 228, 231;
+  --success: #4ade80;
+  --success-rgb: 74, 222, 128;
+  --danger: #f87171;
+  --danger-rgb: 248, 113, 113;
+}
+
+html,
+body {
+  background-color: #050505;
+  color: #fafafa;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Browser surface customization per craft floor */
+::selection {
+  background-color: var(--selection-bg, #f43f5e);
+  color: var(--selection-text, #050505);
+}
+
+input, textarea, button {
+  font-family: inherit;
+}
+
+input {
+  caret-color: var(--accent, #f43f5e);
+}
+
+/* Custom terminal scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+  border-left: 1px solid #262626;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #262626;
+  border: 1px solid #262626;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent, #f43f5e);
+}
+
+/* Focus outline */
+*:focus-visible {
+  outline: 1px solid var(--accent, #f43f5e);
+  outline-offset: 1px;
+}
+
+/* Dynamic theme overrides for all accent utility classes */
+[data-theme] .text-\[\#fbbf24\] {
+  color: var(--accent) !important;
+}
+
+[data-theme] .border-\[\#fbbf24\] {
+  border-color: var(--accent) !important;
+}
+
+[data-theme] .bg-\[\#fbbf24\] {
+  background-color: var(--accent) !important;
+}
+
+[data-theme] .hover\:text-\[\#fbbf24\]:hover {
+  color: var(--accent) !important;
+}
+
+[data-theme] .hover\:border-\[\#fbbf24\]:hover {
+  border-color: var(--accent) !important;
+}
+
+[data-theme] .hover\:bg-\[\#fbbf24\]:hover {
+  background-color: var(--accent) !important;
+}
+
+[data-theme] .group:hover .group-hover\:text-\[\#fbbf24\] {
+  color: var(--accent) !important;
+}
+
+[data-theme] .group:hover .group-hover\:border-\[\#fbbf24\] {
+  border-color: var(--accent) !important;
+}
+
+[data-theme] .border-l-\[\#fbbf24\] {
+  border-left-color: var(--accent) !important;
+}
+
+[data-theme] .border-dashed.border-\[\#fbbf24\],
+[data-theme] .focus\:border-\[\#fbbf24\]:focus {
+  border-color: var(--accent) !important;
+}
+
+/* Subtle active backgrounds */
+[data-theme] .bg-\[\#141208\],
+[data-theme] .bg-\[\#1a1708\],
+[data-theme] .bg-\[\#1f1a09\],
+[data-theme] .bg-\[\#161307\],
+[data-theme] .bg-\[\#121008\] {
+  background-color: var(--accent-subtle) !important;
+}
+
+[data-theme] .border-\[\#fbbf24\]\/30,
+[data-theme] .border-\[\#fbbf24\]\/40 {
+  border-color: var(--accent-border) !important;
+}
+
+/* Smooth color transitions for theme switches */
+[data-theme] {
+  transition: color 200ms ease, border-color 200ms ease, background-color 200ms ease;
+}
+
+/* Primary Accent Utility Classes */
+.text-accent {
+  color: var(--accent) !important;
+}
+.text-accent-dim {
+  color: var(--accent-dim) !important;
+}
+.border-accent {
+  border-color: var(--accent) !important;
+}
+.border-accent-border {
+  border-color: var(--accent-border) !important;
+}
+.border-accent-subtle {
+  border-color: var(--accent-subtle) !important;
+}
+.bg-accent {
+  background-color: var(--accent) !important;
+}
+.bg-accent-subtle {
+  background-color: var(--accent-subtle) !important;
+}
+.bg-accent-soft {
+  background-color: var(--accent-soft) !important;
+}
+.bg-accent-muted {
+  background-color: var(--accent-muted) !important;
+}
+
+/* Secondary Contrasting Accent Utility Classes */
+.text-accent-secondary {
+  color: var(--accent-secondary) !important;
+}
+.text-accent-secondary-dim {
+  color: var(--accent-secondary-dim) !important;
+}
+.border-accent-secondary {
+  border-color: var(--accent-secondary) !important;
+}
+.border-accent-secondary-border {
+  border-color: var(--accent-secondary-border) !important;
+}
+.border-accent-secondary-subtle {
+  border-color: var(--accent-secondary-subtle) !important;
+}
+.bg-accent-secondary {
+  background-color: var(--accent-secondary) !important;
+}
+.bg-accent-secondary-subtle {
+  background-color: var(--accent-secondary-subtle) !important;
+}
+.bg-accent-secondary-soft {
+  background-color: var(--accent-secondary-soft) !important;
+}
+.bg-accent-secondary-muted {
+  background-color: var(--accent-secondary-muted) !important;
+}
