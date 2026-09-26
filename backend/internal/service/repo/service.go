@@ -155,15 +155,18 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	}
 	job, err := s.jobManager.GetJob(ctx, jobID)
 	if err != nil {
+		s.failJobAndSnapshot(jobID, nil, err.Error())
 		return fmt.Errorf("failed to load job: %w", err)
 	}
 	if job.SnapshotID == nil {
+		s.failJobAndSnapshot(jobID, nil, "job has no associated snapshot ID")
 		return errors.New("job has no associated snapshot ID")
 	}
 
 	// 2. Load snapshot and repo
 	snapshot, repo, err := s.getSnapshotAndRepoByID(ctx, *job.SnapshotID)
 	if err != nil {
+		s.failJobAndSnapshot(jobID, job.SnapshotID, err.Error())
 		return fmt.Errorf("failed to load snapshot or repository: %w", err)
 	}
 
@@ -174,8 +177,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	// 4. Fetch tree
 	fetchRes, err := s.fetcher.FetchTree(ctx, repo.Owner, repo.Name, snapshot.CommitSHA)
 	if err != nil {
-		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
-		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
+		s.failJobAndSnapshot(jobID, &snapshot.ID, err.Error())
 		return fmt.Errorf("failed to fetch git tree: %w", err)
 	}
 
@@ -196,7 +198,9 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	primaryLang := "Plain Text"
 	maxLines := -1
 	for lang, count := range langCounts {
-		if count > maxLines {
+		// Deterministic tie-break rule: highest line count wins; on equal counts,
+		// the lexicographically smaller language name (alphabetical order) wins.
+		if count > maxLines || (count == maxLines && (primaryLang == "Plain Text" || lang < primaryLang)) {
 			maxLines = count
 			primaryLang = lang
 		}
@@ -207,8 +211,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 
 	pathToFileID, err := s.persistFiles(ctx, snapshot.ID, files)
 	if err != nil {
-		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
-		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
+		s.failJobAndSnapshot(jobID, &snapshot.ID, err.Error())
 		return fmt.Errorf("failed to persist files: %w", err)
 	}
 
@@ -226,7 +229,13 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 				continue
 			}
 
-			res := s.analyzerRegistry.Analyze(ctx, f.Path, f.Content)
+			res, err := s.analyzerRegistry.Analyze(ctx, f.Path, f.Content)
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+					s.failJobAndSnapshot(jobID, &snapshot.ID, fmt.Sprintf("analysis canceled: %v", err))
+					return fmt.Errorf("analysis canceled: %w", err)
+				}
+			}
 			if res != nil {
 				if len(res.ParseErrors) > 0 {
 					s.logger.Warn("Structural analysis warning",
@@ -251,7 +260,8 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 		}
 
 		if err := s.persistSymbols(ctx, snapshot.ID, allSymbols); err != nil {
-			s.logger.Warn("Failed to persist symbols (continuing snapshot finalization)", slog.String("error", err.Error()))
+			s.failJobAndSnapshot(jobID, &snapshot.ID, fmt.Sprintf("failed to persist code symbols: %v", err))
+			return fmt.Errorf("failed to persist code symbols: %w", err)
 		}
 	}
 
@@ -264,8 +274,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	}
 
 	if err := s.finalizeSnapshot(ctx, snapshot.ID, len(files), totalLines, primaryLang, finalSnapshotStatus); err != nil {
-		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
-		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
+		s.failJobAndSnapshot(jobID, &snapshot.ID, err.Error())
 		return fmt.Errorf("failed to finalize snapshot: %w", err)
 	}
 
@@ -652,6 +661,18 @@ func (s *Service) failJobDirect(ctx context.Context, jobID uuid.UUID, errMsg str
 	query := `UPDATE analysis_jobs SET status = 'FAILED', error_message = $2, updated_at = NOW() WHERE id = $1`
 	_, err := s.db.ExecContext(ctx, query, jobID, errMsg)
 	return err
+}
+
+func (s *Service) failJobAndSnapshot(jobID uuid.UUID, snapshotID *uuid.UUID, errMsg string) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if snapshotID != nil {
+		_ = s.updateSnapshotStatus(cleanupCtx, *snapshotID, domain.SnapshotStatusFailed)
+	}
+	if s.jobManager != nil {
+		_ = s.jobManager.FailJob(cleanupCtx, jobID, errMsg)
+	}
 }
 
 // GetSnapshotFiles retrieves the list of files recorded in an immutable snapshot.

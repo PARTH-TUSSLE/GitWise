@@ -1120,3 +1120,282 @@ func TestService_IdempotentSymbolReanalysis(t *testing.T) {
 		t.Fatalf("expected second ingestion to execute upsert, before: %d, after: %d", firstCount, symbolInserts)
 	}
 }
+
+func TestService_ProcessIngestion_SymbolPersistenceFailure_FailsAndNotReady(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_symbol_persistence_failure")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	repoID := uuid.New()
+	snapshotID := uuid.New()
+	jobID := uuid.New()
+	commitSHA := "0123456789abcdef0123456789abcdef01234567"
+	now := time.Now()
+
+	var snapshotStatus string
+	var jobStatus string
+
+	testRepoDriver.mu.Lock()
+	testRepoDriver.handler = func(query string, args []driver.NamedValue) (driver.Rows, driver.Result, error) {
+		if strings.Contains(query, "FROM analysis_jobs") && strings.Contains(query, "WHERE id = $1") {
+			return &fakeRepoRows{
+				cols: []string{"id", "type", "snapshot_id", "status", "stage", "progress_percent", "error_message", "retry_count", "created_at", "updated_at"},
+				data: [][]driver.Value{
+					{jobID.String(), string(domain.JobTypeSnapshotIngest), snapshotID.String(), string(domain.JobStatusQueued), string(domain.JobStageInitializing), 0.0, nil, 0, now, now},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "FROM repository_snapshots s") {
+			return &fakeRepoRows{
+				cols: []string{
+					"s.id", "s.repository_id", "s.commit_sha", "s.ref_name", "s.status", "s.total_files", "s.total_lines", "primary_language", "s.analyzed_at", "s.expires_at", "s.created_at",
+					"r.id", "r.github_id", "r.owner", "r.name", "r.default_branch", "r.is_private", "r.created_at", "r.updated_at",
+				},
+				data: [][]driver.Value{
+					{
+						snapshotID.String(), repoID.String(), commitSHA, "main", string(domain.SnapshotStatusQueued), 0, 0, nil, nil, nil, now,
+						repoID.String(), int64(123), "owner", "repo", "main", false, now, now,
+					},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "INSERT INTO repository_files") {
+			return &fakeRepoRows{
+				cols: []string{"id", "path"},
+				data: [][]driver.Value{{uuid.New().String(), "main.go"}},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "INSERT INTO code_symbols") {
+			// Simulate unrecoverable DB error during symbol persistence
+			return nil, nil, errors.New("simulated database disk full error during code_symbols insert")
+		}
+		if strings.Contains(query, "UPDATE repository_snapshots") {
+			for _, arg := range args {
+				if s, ok := arg.Value.(string); ok && (s == string(domain.SnapshotStatusReady) || s == string(domain.SnapshotStatusPartial) || s == string(domain.SnapshotStatusFailed)) {
+					snapshotStatus = s
+				}
+			}
+			return nil, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "UPDATE analysis_jobs") {
+			if strings.Contains(query, "SET status = 'FAILED'") {
+				jobStatus = string(domain.JobStatusFailed)
+			} else if strings.Contains(query, "SET status = 'COMPLETED'") {
+				jobStatus = string(domain.JobStatusCompleted)
+			}
+			return nil, driver.RowsAffected(1), nil
+		}
+		return &fakeRepoRows{}, driver.RowsAffected(1), nil
+	}
+	testRepoDriver.mu.Unlock()
+
+	goCode := "package main\n\nfunc main() {}\n"
+	files := []git.FileEntry{
+		{Path: "main.go", Extension: ".go", Language: "Go", SizeBytes: len(goCode), LineCount: 3, SHA256Hash: "h1", Content: goCode},
+	}
+	fetcher := git.NewMockFetcher(commitSHA, files)
+	fetcher.Outcome = git.IngestionOutcomeComplete
+
+	broker := sse.NewBroker(nil)
+	jm := jobs.NewJobManager(db, 1, 5, nil, broker)
+	svc := repo.NewService(db, fetcher, jm, nil)
+
+	err = svc.ProcessIngestion(context.Background(), jobID)
+	if err == nil {
+		t.Fatal("expected ProcessIngestion to return error on symbol persistence failure, got nil")
+	}
+
+	if snapshotStatus != string(domain.SnapshotStatusFailed) {
+		t.Errorf("expected snapshot finalized as FAILED on symbol persistence failure, got: %s", snapshotStatus)
+	}
+	if snapshotStatus == string(domain.SnapshotStatusReady) {
+		t.Error("snapshot MUST NOT be marked READY when symbol persistence fails")
+	}
+	if jobStatus != string(domain.JobStatusFailed) {
+		t.Errorf("expected job marked FAILED on symbol persistence failure, got: %s", jobStatus)
+	}
+	if jobStatus == string(domain.JobStatusCompleted) {
+		t.Error("job MUST NOT be marked COMPLETED when symbol persistence fails")
+	}
+}
+
+func TestService_ProcessIngestion_Cancellation_FailsAndNotReady(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_process_cancellation")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	repoID := uuid.New()
+	snapshotID := uuid.New()
+	jobID := uuid.New()
+	commitSHA := "0123456789abcdef0123456789abcdef01234567"
+	now := time.Now()
+
+	var snapshotStatus string
+	var jobStatus string
+
+	testRepoDriver.mu.Lock()
+	testRepoDriver.handler = func(query string, args []driver.NamedValue) (driver.Rows, driver.Result, error) {
+		if strings.Contains(query, "FROM analysis_jobs") && strings.Contains(query, "WHERE id = $1") {
+			return &fakeRepoRows{
+				cols: []string{"id", "type", "snapshot_id", "status", "stage", "progress_percent", "error_message", "retry_count", "created_at", "updated_at"},
+				data: [][]driver.Value{
+					{jobID.String(), string(domain.JobTypeSnapshotIngest), snapshotID.String(), string(domain.JobStatusQueued), string(domain.JobStageInitializing), 0.0, nil, 0, now, now},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "FROM repository_snapshots s") {
+			return &fakeRepoRows{
+				cols: []string{
+					"s.id", "s.repository_id", "s.commit_sha", "s.ref_name", "s.status", "s.total_files", "s.total_lines", "primary_language", "s.analyzed_at", "s.expires_at", "s.created_at",
+					"r.id", "r.github_id", "r.owner", "r.name", "r.default_branch", "r.is_private", "r.created_at", "r.updated_at",
+				},
+				data: [][]driver.Value{
+					{
+						snapshotID.String(), repoID.String(), commitSHA, "main", string(domain.SnapshotStatusQueued), 0, 0, nil, nil, nil, now,
+						repoID.String(), int64(123), "owner", "repo", "main", false, now, now,
+					},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "INSERT INTO repository_files") {
+			return &fakeRepoRows{
+				cols: []string{"id", "path"},
+				data: [][]driver.Value{{uuid.New().String(), "main.go"}},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "UPDATE repository_snapshots") {
+			for _, arg := range args {
+				if s, ok := arg.Value.(string); ok && (s == string(domain.SnapshotStatusReady) || s == string(domain.SnapshotStatusPartial) || s == string(domain.SnapshotStatusFailed)) {
+					snapshotStatus = s
+				}
+			}
+			return nil, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "UPDATE analysis_jobs") {
+			if strings.Contains(query, "SET status = 'FAILED'") {
+				jobStatus = string(domain.JobStatusFailed)
+			}
+			return nil, driver.RowsAffected(1), nil
+		}
+		return &fakeRepoRows{}, driver.RowsAffected(1), nil
+	}
+	testRepoDriver.mu.Unlock()
+
+	files := []git.FileEntry{
+		{Path: "main.go", Extension: ".go", Language: "Go", SizeBytes: 25, LineCount: 2, SHA256Hash: "h1", Content: "package main\nfunc main() {}"},
+	}
+	fetcher := git.NewMockFetcher(commitSHA, files)
+	fetcher.Outcome = git.IngestionOutcomeComplete
+	fetcher.Err = context.Canceled
+
+	broker := sse.NewBroker(nil)
+	jm := jobs.NewJobManager(db, 1, 5, nil, broker)
+	svc := repo.NewService(db, fetcher, jm, nil)
+
+	err = svc.ProcessIngestion(context.Background(), jobID)
+	if err == nil {
+		t.Fatal("expected cancellation error from ProcessIngestion, got nil")
+	}
+
+	if snapshotStatus != string(domain.SnapshotStatusFailed) {
+		t.Errorf("expected snapshot finalized as FAILED upon cancellation, got: %s", snapshotStatus)
+	}
+	if snapshotStatus == string(domain.SnapshotStatusReady) {
+		t.Error("snapshot MUST NOT be marked READY upon cancellation")
+	}
+	if jobStatus != string(domain.JobStatusFailed) {
+		t.Errorf("expected job marked FAILED upon cancellation, got: %s", jobStatus)
+	}
+}
+
+func TestService_ProcessIngestion_DeterministicDominantLanguageTieBreak(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_dominant_lang_tiebreak")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	repoID := uuid.New()
+	snapshotID := uuid.New()
+	jobID := uuid.New()
+	commitSHA := "0123456789abcdef0123456789abcdef01234567"
+	now := time.Now()
+
+	var recordedPrimaryLang string
+
+	testRepoDriver.mu.Lock()
+	testRepoDriver.handler = func(query string, args []driver.NamedValue) (driver.Rows, driver.Result, error) {
+		if strings.Contains(query, "FROM analysis_jobs") && strings.Contains(query, "WHERE id = $1") {
+			return &fakeRepoRows{
+				cols: []string{"id", "type", "snapshot_id", "status", "stage", "progress_percent", "error_message", "retry_count", "created_at", "updated_at"},
+				data: [][]driver.Value{
+					{jobID.String(), string(domain.JobTypeSnapshotIngest), snapshotID.String(), string(domain.JobStatusQueued), string(domain.JobStageInitializing), 0.0, nil, 0, now, now},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "FROM repository_snapshots s") {
+			return &fakeRepoRows{
+				cols: []string{
+					"s.id", "s.repository_id", "s.commit_sha", "s.ref_name", "s.status", "s.total_files", "s.total_lines", "primary_language", "s.analyzed_at", "s.expires_at", "s.created_at",
+					"r.id", "r.github_id", "r.owner", "r.name", "r.default_branch", "r.is_private", "r.created_at", "r.updated_at",
+				},
+				data: [][]driver.Value{
+					{
+						snapshotID.String(), repoID.String(), commitSHA, "main", string(domain.SnapshotStatusQueued), 0, 0, nil, nil, nil, now,
+						repoID.String(), int64(123), "owner", "repo", "main", false, now, now,
+					},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "INSERT INTO repository_files") {
+			return &fakeRepoRows{
+				cols: []string{"id", "path"},
+				data: [][]driver.Value{
+					{uuid.New().String(), "main.go"},
+					{uuid.New().String(), "service.ts"},
+				},
+			}, driver.RowsAffected(2), nil
+		}
+		if strings.Contains(query, "INSERT INTO code_symbols") {
+			return nil, driver.RowsAffected(0), nil
+		}
+		if strings.Contains(query, "UPDATE repository_snapshots") && strings.Contains(query, "primary_language = $5") {
+			// args[4] corresponds to primary_language ($5)
+			if len(args) >= 5 {
+				if lang, ok := args[4].Value.(string); ok {
+					recordedPrimaryLang = lang
+				}
+			}
+			return nil, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "UPDATE analysis_jobs") {
+			return nil, driver.RowsAffected(1), nil
+		}
+		return &fakeRepoRows{}, driver.RowsAffected(1), nil
+	}
+	testRepoDriver.mu.Unlock()
+
+	// 10 lines of TypeScript, 10 lines of Go -> tie break: "Go" < "TypeScript" alphabetically -> "Go"
+	files := []git.FileEntry{
+		{Path: "service.ts", Extension: ".ts", Language: "TypeScript", SizeBytes: 100, LineCount: 10, SHA256Hash: "h1", Content: "console.log(1);"},
+		{Path: "main.go", Extension: ".go", Language: "Go", SizeBytes: 100, LineCount: 10, SHA256Hash: "h2", Content: "package main"},
+	}
+	fetcher := git.NewMockFetcher(commitSHA, files)
+	fetcher.Outcome = git.IngestionOutcomeComplete
+
+	broker := sse.NewBroker(nil)
+	jm := jobs.NewJobManager(db, 1, 5, nil, broker)
+	svc := repo.NewService(db, fetcher, jm, nil)
+
+	if err := svc.ProcessIngestion(context.Background(), jobID); err != nil {
+		t.Fatalf("unexpected error during ProcessIngestion: %v", err)
+	}
+
+	if recordedPrimaryLang != "Go" {
+		t.Errorf("expected deterministic tie-break language 'Go', got: %s", recordedPrimaryLang)
+	}
+}
