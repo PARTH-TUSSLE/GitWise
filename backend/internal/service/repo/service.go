@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gitwise/backend/internal/analysis"
+	"github.com/gitwise/backend/internal/analysis/golang"
+	"github.com/gitwise/backend/internal/analysis/typescript"
 	"github.com/gitwise/backend/internal/domain"
 	"github.com/gitwise/backend/internal/git"
 	"github.com/gitwise/backend/internal/jobs"
@@ -18,10 +21,11 @@ import (
 
 // Service coordinates repository ingestion, commit snapshots, and file persistence.
 type Service struct {
-	db         *sql.DB
-	fetcher    git.Fetcher
-	jobManager *jobs.JobManager
-	logger     *slog.Logger
+	db               *sql.DB
+	fetcher          git.Fetcher
+	jobManager       *jobs.JobManager
+	analyzerRegistry *analysis.Registry
+	logger           *slog.Logger
 }
 
 // NewService creates a new repository service instance.
@@ -29,11 +33,17 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 	if logger == nil {
 		logger = slog.Default()
 	}
+
+	registry := analysis.NewRegistry()
+	registry.Register(golang.NewGoAnalyzer())
+	registry.Register(typescript.NewTypeScriptAnalyzer())
+
 	svc := &Service{
-		db:         db,
-		fetcher:    fetcher,
-		jobManager: jobManager,
-		logger:     logger,
+		db:               db,
+		fetcher:          fetcher,
+		jobManager:       jobManager,
+		analyzerRegistry: registry,
+		logger:           logger,
 	}
 
 	// Register the task handler for SNAPSHOT_INGEST
@@ -42,6 +52,11 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 	}
 
 	return svc
+}
+
+// SetAnalyzerRegistry allows setting a custom analyzer registry (for testing or plugins).
+func (s *Service) SetAnalyzerRegistry(r *analysis.Registry) {
+	s.analyzerRegistry = r
 }
 
 // Ingest triggers or returns an existing snapshot ingestion job for a repository.
@@ -188,15 +203,61 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	}
 
 	// 6. Persist files in database transaction
-	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageFinalizing, 80.0, len(files), len(files), "Persisting repository files into snapshot")
+	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageFinalizing, 60.0, len(files), len(files), "Persisting repository files into snapshot")
 
-	if err := s.persistFiles(ctx, snapshot.ID, files); err != nil {
+	pathToFileID, err := s.persistFiles(ctx, snapshot.ID, files)
+	if err != nil {
 		_ = s.updateSnapshotStatus(ctx, snapshot.ID, domain.SnapshotStatusFailed)
 		_ = s.jobManager.FailJob(ctx, jobID, err.Error())
 		return fmt.Errorf("failed to persist files: %w", err)
 	}
 
-	// 7. Update snapshot with final facts: READY only if COMPLETE, PARTIAL if capped
+	// 7. Structural AST Analysis for Go and TypeScript source files
+	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageAnalyzingAST, 75.0, 0, len(files), "Analyzing Go and TypeScript source structures")
+
+	var allSymbols []domain.CodeSymbol
+	if s.analyzerRegistry != nil {
+		for _, f := range files {
+			if f.IsBinary || f.Content == "" {
+				continue
+			}
+			fileID, ok := pathToFileID[f.Path]
+			if !ok {
+				continue
+			}
+
+			res := s.analyzerRegistry.Analyze(ctx, f.Path, f.Content)
+			if res != nil {
+				if len(res.ParseErrors) > 0 {
+					s.logger.Warn("Structural analysis warning",
+						slog.String("path", f.Path),
+						slog.Any("warnings", res.ParseErrors),
+					)
+				}
+				for _, raw := range res.Symbols {
+					allSymbols = append(allSymbols, domain.CodeSymbol{
+						SnapshotID: snapshot.ID,
+						FileID:     fileID,
+						FilePath:   f.Path,
+						Name:       raw.Name,
+						Kind:       raw.Kind,
+						StartLine:  raw.StartLine,
+						EndLine:    raw.EndLine,
+						Signature:  raw.Signature,
+						IsExported: raw.IsExported,
+					})
+				}
+			}
+		}
+
+		if err := s.persistSymbols(ctx, snapshot.ID, allSymbols); err != nil {
+			s.logger.Warn("Failed to persist symbols (continuing snapshot finalization)", slog.String("error", err.Error()))
+		}
+	}
+
+	// 8. Update snapshot with final facts: READY only if COMPLETE, PARTIAL if capped
+	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageFinalizing, 95.0, len(allSymbols), len(allSymbols), "Finalizing snapshot and architectural subsystems")
+
 	finalSnapshotStatus := domain.SnapshotStatusReady
 	if fetchRes.Outcome == git.IngestionOutcomePartial {
 		finalSnapshotStatus = domain.SnapshotStatusPartial
@@ -208,7 +269,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 		return fmt.Errorf("failed to finalize snapshot: %w", err)
 	}
 
-	// 8. Complete job and broadcast completion event
+	// 9. Complete job and broadcast completion event
 	durationMs := time.Since(startTime).Milliseconds()
 	return s.jobManager.CompleteJob(ctx, jobID, snapshot.ID.String(), snapshot.CommitSHA, durationMs)
 }
@@ -369,10 +430,10 @@ func (s *Service) finalizeSnapshot(ctx context.Context, snapshotID uuid.UUID, to
 	return err
 }
 
-func (s *Service) persistFiles(ctx context.Context, snapshotID uuid.UUID, files []git.FileEntry) error {
+func (s *Service) persistFiles(ctx context.Context, snapshotID uuid.UUID, files []git.FileEntry) (map[string]uuid.UUID, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 
@@ -384,12 +445,14 @@ func (s *Service) persistFiles(ctx context.Context, snapshotID uuid.UUID, files 
 		    line_count = EXCLUDED.line_count,
 		    sha256_hash = EXCLUDED.sha256_hash,
 		    content = EXCLUDED.content,
-		    is_binary = EXCLUDED.is_binary`)
+		    is_binary = EXCLUDED.is_binary
+		RETURNING id, path`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer stmt.Close()
 
+	pathToFileID := make(map[string]uuid.UUID)
 	for _, f := range files {
 		var contentVal *string
 		if !f.IsBinary && f.Content != "" {
@@ -397,7 +460,9 @@ func (s *Service) persistFiles(ctx context.Context, snapshotID uuid.UUID, files 
 			contentVal = &c
 		}
 
-		_, err := stmt.ExecContext(ctx,
+		var fileID uuid.UUID
+		var retPath string
+		err := stmt.QueryRowContext(ctx,
 			snapshotID,
 			f.Path,
 			f.Extension,
@@ -407,13 +472,180 @@ func (s *Service) persistFiles(ctx context.Context, snapshotID uuid.UUID, files 
 			f.SHA256Hash,
 			contentVal,
 			f.IsBinary,
+		).Scan(&fileID, &retPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to insert file %s: %w", f.Path, err)
+		}
+		pathToFileID[retPath] = fileID
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return pathToFileID, nil
+}
+
+func (s *Service) persistSymbols(ctx context.Context, snapshotID uuid.UUID, symbols []domain.CodeSymbol) error {
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO code_symbols (snapshot_id, file_id, name, kind, start_line, end_line, signature, is_exported, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		ON CONFLICT (file_id, name, kind, start_line) DO UPDATE
+		SET end_line = EXCLUDED.end_line,
+		    signature = EXCLUDED.signature,
+		    is_exported = EXCLUDED.is_exported`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, sym := range symbols {
+		_, err := stmt.ExecContext(ctx,
+			snapshotID,
+			sym.FileID,
+			sym.Name,
+			string(sym.Kind),
+			sym.StartLine,
+			sym.EndLine,
+			sym.Signature,
+			sym.IsExported,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to insert file %s: %w", f.Path, err)
+			return fmt.Errorf("failed to insert code symbol %s: %w", sym.Name, err)
 		}
 	}
 
 	return tx.Commit()
+}
+
+// GetSnapshotSymbols retrieves code symbols recorded for a commit snapshot with optional path filter.
+func (s *Service) GetSnapshotSymbols(ctx context.Context, owner, repoName, commitSHA, pathFilter string) ([]domain.CodeSymbol, error) {
+	query := `
+		SELECT cs.id, cs.snapshot_id, cs.file_id, rf.path, cs.name, cs.kind, cs.start_line, cs.end_line, cs.signature, cs.is_exported, cs.created_at
+		FROM code_symbols cs
+		JOIN repository_files rf ON cs.file_id = rf.id
+		JOIN repository_snapshots s ON cs.snapshot_id = s.id
+		JOIN repositories r ON s.repository_id = r.id
+		WHERE r.owner = $1 AND r.name = $2 AND s.commit_sha = $3
+		  AND ($4 = '' OR rf.path = $4)
+		ORDER BY rf.path ASC, cs.start_line ASC`
+
+	rows, err := s.db.QueryContext(ctx, query, owner, repoName, commitSHA, pathFilter)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query code symbols: %w", err)
+	}
+	defer rows.Close()
+
+	var symbols []domain.CodeSymbol
+	for rows.Next() {
+		var sym domain.CodeSymbol
+		var kindStr string
+		var sig sql.NullString
+		err := rows.Scan(
+			&sym.ID, &sym.SnapshotID, &sym.FileID, &sym.FilePath,
+			&sym.Name, &kindStr, &sym.StartLine, &sym.EndLine,
+			&sig, &sym.IsExported, &sym.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		sym.Kind = domain.SymbolKind(kindStr)
+		if sig.Valid {
+			sym.Signature = sig.String
+		}
+		symbols = append(symbols, sym)
+	}
+	return symbols, nil
+}
+
+// GetSubsystems computes explainable path-based subsystems from the snapshot files and symbols.
+func (s *Service) GetSubsystems(ctx context.Context, owner, repoName, ref string) ([]domain.SubsystemNode, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := s.GetSnapshotFiles(ctx, owner, repoName, snap.CommitSHA)
+	if err != nil {
+		return nil, err
+	}
+
+	symbols, err := s.GetSnapshotSymbols(ctx, owner, repoName, snap.CommitSHA, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return analysis.ClassifySubsystems(files, symbols), nil
+}
+
+// GetTree returns a hierarchical directory tree with extracted symbol counts.
+func (s *Service) GetTree(ctx context.Context, owner, repoName, ref string) ([]domain.RepoTreeItem, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := s.GetSnapshotFiles(ctx, owner, repoName, snap.CommitSHA)
+	if err != nil {
+		return nil, err
+	}
+
+	symbols, err := s.GetSnapshotSymbols(ctx, owner, repoName, snap.CommitSHA, "")
+	if err != nil {
+		return nil, err
+	}
+
+	return analysis.BuildRepoTree(files, symbols), nil
+}
+
+func (s *Service) resolveSnapshotForRef(ctx context.Context, owner, repoName, ref string) (*domain.RepositorySnapshot, error) {
+	if ref == "" {
+		ref = "main"
+	}
+
+	repo, err := s.GetRepository(ctx, owner, repoName)
+	if err != nil {
+		return nil, fmt.Errorf("repository %s/%s not found: %w", owner, repoName, err)
+	}
+
+	var commitSHA string
+	if s.fetcher != nil {
+		sha, err := s.fetcher.ResolveCommitSHA(ctx, owner, repoName, ref)
+		if err == nil && sha != "" {
+			commitSHA = sha
+		}
+	}
+
+	if commitSHA != "" {
+		snap, err := s.getSnapshot(ctx, repo.ID, commitSHA)
+		if err == nil && snap != nil && (snap.Status == domain.SnapshotStatusReady || snap.Status == domain.SnapshotStatusPartial) {
+			return snap, nil
+		}
+	}
+
+	// Fallback to latest ready snapshot for this repository
+	query := `
+		SELECT id, repository_id, commit_sha, ref_name, status, total_files, total_lines, primary_language, analyzed_at, expires_at, created_at
+		FROM repository_snapshots
+		WHERE repository_id = $1 AND status IN ('READY', 'PARTIAL')
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	row := s.db.QueryRowContext(ctx, query, repo.ID)
+	snap, err := scanSnapshot(row)
+	if err != nil {
+		return nil, fmt.Errorf("no ready snapshot found for repository %s/%s: %w", owner, repoName, err)
+	}
+	return snap, nil
 }
 
 func (s *Service) failJobDirect(ctx context.Context, jobID uuid.UUID, errMsg string) error {

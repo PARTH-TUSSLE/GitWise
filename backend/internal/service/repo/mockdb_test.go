@@ -83,6 +83,12 @@ func (s *fakeRepoStmt) Exec(args []driver.Value) (driver.Result, error) {
 func (s *fakeRepoStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return &fakeRepoRows{}, nil
 }
+func (s *fakeRepoStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	return s.conn.QueryContext(ctx, s.query, args)
+}
+func (s *fakeRepoStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	return s.conn.ExecContext(ctx, s.query, args)
+}
 
 type fakeRepoTx struct{}
 
