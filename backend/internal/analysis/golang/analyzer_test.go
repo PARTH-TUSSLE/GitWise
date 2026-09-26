@@ -163,3 +163,14 @@ func BrokenFunction( { // syntax error
 		t.Error("expected partial recovery of GoodFunction from malformed file")
 	}
 }
+
+func TestGoAnalyzer_ContextCancellation(t *testing.T) {
+	analyzer := golang.NewGoAnalyzer()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := analyzer.AnalyzeFile(ctx, "test.go", "package main\nfunc main() {}\n")
+	if err == nil {
+		t.Fatal("expected context cancellation error, got nil")
+	}
+}

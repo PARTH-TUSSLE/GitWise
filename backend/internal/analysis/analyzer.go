@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"path"
 	"strings"
 	"sync"
@@ -95,25 +96,33 @@ func (r *Registry) FindAnalyzer(filePath string) LanguageAnalyzer {
 }
 
 // Analyze dispatches file analysis to the registered analyzer, falling back to Level 0 metadata.
-func (r *Registry) Analyze(ctx context.Context, filePath, content string) *FileAnalysisResult {
+// Context cancellation or deadlines are propagated directly rather than converted to parse warnings.
+func (r *Registry) Analyze(ctx context.Context, filePath, content string) (*FileAnalysisResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	analyzer := r.FindAnalyzer(filePath)
 	if analyzer == nil {
 		return &FileAnalysisResult{
 			Symbols: nil,
 			Imports: nil,
 			Level:   Level0Metadata,
-		}
+		}, nil
 	}
 
 	result, err := analyzer.AnalyzeFile(ctx, filePath, content)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return nil, err
+		}
 		return &FileAnalysisResult{
 			Symbols:     nil,
 			Imports:     nil,
 			ParseErrors: []string{err.Error()},
 			Level:       Level0Metadata,
-		}
+		}, nil
 	}
 
-	return result
+	return result, nil
 }

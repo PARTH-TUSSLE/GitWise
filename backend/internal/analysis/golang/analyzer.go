@@ -49,6 +49,10 @@ func (a *GoAnalyzer) Capability() analysis.CapabilityReport {
 }
 
 func (a *GoAnalyzer) AnalyzeFile(ctx context.Context, filePath, content string) (*analysis.FileAnalysisResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	if strings.TrimSpace(content) == "" {
 		return &analysis.FileAnalysisResult{
 			Symbols: nil,
