@@ -212,6 +212,11 @@ func (jm *JobManager) Enqueue(ctx context.Context, jobID uuid.UUID) error {
 		return nil
 	}
 
+	if err := ctx.Err(); err != nil {
+		jm.enqueuedMu.Unlock()
+		return err
+	}
+
 	select {
 	case <-ctx.Done():
 		jm.enqueuedMu.Unlock()
