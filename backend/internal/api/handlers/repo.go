@@ -3,23 +3,177 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/gitwise/backend/internal/api/sse"
 	"github.com/gitwise/backend/internal/domain"
+	"github.com/gitwise/backend/internal/jobs"
+	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 type RepoHandler struct {
 	repositories map[string]domain.RepoModel
+	repoSvc      *repo.Service
+	jobManager   *jobs.JobManager
+	sseBroker    *sse.Broker
+	logger       *slog.Logger
 }
 
-func NewRepoHandler() *RepoHandler {
+func NewRepoHandler(repoSvc *repo.Service, jobManager *jobs.JobManager, sseBroker *sse.Broker, logger *slog.Logger) *RepoHandler {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	h := &RepoHandler{
 		repositories: make(map[string]domain.RepoModel),
+		repoSvc:      repoSvc,
+		jobManager:   jobManager,
+		sseBroker:    sseBroker,
+		logger:       logger,
 	}
 	h.initMockRepos()
 	return h
+}
+
+type IngestRequest struct {
+	Owner string `json:"owner"`
+	Repo  string `json:"repo"`
+	Ref   string `json:"ref"`
+}
+
+type IngestResponse struct {
+	JobID      uuid.UUID        `json:"jobId"`
+	SnapshotID uuid.UUID        `json:"snapshotId"`
+	Status     domain.JobStatus `json:"status"`
+	Stage      domain.JobStage  `json:"stage"`
+	CommitSHA  string           `json:"commitSha"`
+}
+
+// IngestRepository handles POST /api/v1/repositories/ingest
+func (h *RepoHandler) IngestRepository(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req IngestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	req.Owner = strings.TrimSpace(req.Owner)
+	req.Repo = strings.TrimSpace(req.Repo)
+	req.Ref = strings.TrimSpace(req.Ref)
+
+	if req.Owner == "" || req.Repo == "" {
+		http.Error(w, `{"error":"owner and repo fields are required"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.Contains(req.Owner, "/") || strings.Contains(req.Repo, "/") {
+		http.Error(w, `{"error":"invalid repository identifier format"}`, http.StatusBadRequest)
+		return
+	}
+
+	job, snapshot, err := h.repoSvc.Ingest(r.Context(), req.Owner, req.Repo, req.Ref)
+	if err != nil {
+		h.logger.Error("Repository ingestion failed to queue",
+			slog.String("owner", req.Owner),
+			slog.String("repo", req.Repo),
+			slog.String("ref", req.Ref),
+			slog.String("error", err.Error()),
+		)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Failed to initiate repository ingestion"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(IngestResponse{
+		JobID:      job.ID,
+		SnapshotID: snapshot.ID,
+		Status:     job.Status,
+		Stage:      job.Stage,
+		CommitSHA:  snapshot.CommitSHA,
+	})
+}
+
+// GetJob handles GET /api/v1/jobs/{id}
+func (h *RepoHandler) GetJob(w http.ResponseWriter, r *http.Request) {
+	if h.jobManager == nil {
+		http.Error(w, `{"error":"Job manager is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	jobIDStr := chi.URLParam(r, "id")
+	jobID, err := uuid.Parse(jobIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"invalid job uuid"}`, http.StatusBadRequest)
+		return
+	}
+
+	job, err := h.jobManager.GetJob(r.Context(), jobID)
+	if err != nil {
+		h.logger.Warn("Job lookup failed", slog.String("job_id", jobIDStr), slog.String("error", err.Error()))
+		http.Error(w, `{"error":"job not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(job)
+}
+
+// GetJobStream handles GET /api/v1/jobs/{id}/stream via Server-Sent Events
+func (h *RepoHandler) GetJobStream(w http.ResponseWriter, r *http.Request) {
+	if h.sseBroker == nil {
+		http.Error(w, `{"error":"SSE streaming broker is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	jobID := chi.URLParam(r, "id")
+	if jobID == "" {
+		http.Error(w, `{"error":"job id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	h.sseBroker.ServeHTTP(w, r, jobID)
+}
+
+// GetSnapshotFiles handles GET /api/v1/repositories/{owner}/{repo}/snapshots/{commitSha}/files
+func (h *RepoHandler) GetSnapshotFiles(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	commitSha := chi.URLParam(r, "commitSha")
+
+	if owner == "" || repo == "" || commitSha == "" {
+		http.Error(w, `{"error":"owner, repo, and commitSha are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	files, err := h.repoSvc.GetSnapshotFiles(r.Context(), owner, repo, commitSha)
+	if err != nil {
+		h.logger.Error("Failed to fetch snapshot files",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("commit_sha", commitSha),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, `{"error":"Failed to retrieve snapshot files"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(files)
 }
 
 func (h *RepoHandler) GetRepository(w http.ResponseWriter, r *http.Request) {

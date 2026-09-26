@@ -251,7 +251,7 @@ func TestGitStatHandler_LiveMode_RateLimit(t *testing.T) {
 }
 
 func TestRepoHandler_PredefinedRepo(t *testing.T) {
-	h := handlers.NewRepoHandler()
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
 
 	r := chi.NewRouter()
 	r.Get("/api/v1/repositories/{owner}/{repo}", h.GetRepository)
@@ -282,7 +282,7 @@ func TestRepoHandler_PredefinedRepo(t *testing.T) {
 }
 
 func TestRepoHandler_DynamicFallbackRepo(t *testing.T) {
-	h := handlers.NewRepoHandler()
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
 
 	r := chi.NewRouter()
 	r.Get("/api/v1/repositories/{owner}/{repo}", h.GetRepository)
@@ -337,5 +337,35 @@ func TestRouter_MissingParams(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for trailing slash without username, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_IngestValidation(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Post("/api/v1/repositories/ingest", h.IngestRepository)
+
+	// Missing body
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/ingest", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	// When service is nil, it should report 503
+	if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 503 or 400, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_GetJobValidation(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/jobs/{id}", h.GetJob)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/jobs/not-a-uuid", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 503 or 400, got %d", rec.Code)
 	}
 }

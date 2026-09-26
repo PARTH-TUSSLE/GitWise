@@ -40,3 +40,17 @@ type RepositorySnapshot struct {
 	ExpiresAt       *time.Time     `json:"expiresAt,omitempty"`
 	CreatedAt       time.Time      `json:"createdAt"`
 }
+
+type RepositoryFile struct {
+	ID         uuid.UUID `json:"id"`
+	SnapshotID uuid.UUID `json:"snapshotId"`
+	Path       string    `json:"path"`
+	Extension  string    `json:"extension"`
+	Language   string    `json:"language"`
+	SizeBytes  int       `json:"sizeBytes"`
+	LineCount  int       `json:"lineCount"`
+	SHA256Hash string    `json:"sha256Hash"`
+	Content    *string   `json:"content,omitempty"`
+	IsBinary   bool      `json:"isBinary"`
+	CreatedAt  time.Time `json:"createdAt"`
+}

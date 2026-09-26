@@ -155,6 +155,8 @@ export default function GitStatPage() {
         <aside className="lg:col-span-3 flex flex-col gap-3">
           <DiffStream
             profile={profile}
+            activeFilter={activeFilter}
+            onFilterChange={setActiveFilter}
             onSelectDiff={(diffId) =>
               setModalState({ isOpen: true, type: "diff", id: diffId })
             }

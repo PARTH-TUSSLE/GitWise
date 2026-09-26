@@ -21,3 +21,13 @@ var GithubGitstatUp string
 //
 //go:embed 000002_github_gitstat.down.sql
 var GithubGitstatDown string
+
+// RepositoryFilesUp contains the Phase 3 repository_files schema creation SQL.
+//
+//go:embed 000003_repository_files.up.sql
+var RepositoryFilesUp string
+
+// RepositoryFilesDown contains the Phase 3 repository_files schema rollback SQL.
+//
+//go:embed 000003_repository_files.down.sql
+var RepositoryFilesDown string

@@ -17,7 +17,7 @@ import (
 	"github.com/gitwise/backend/internal/storage/postgres"
 )
 
-const AppVersion = "2.1.0-phase2"
+const AppVersion = "2.1.0-phase3"
 
 func main() {
 	cfg, err := config.Load()
@@ -83,6 +83,15 @@ func main() {
 
 	// Initialize Router
 	router := api.NewRouter(cfg, db, logger, AppVersion)
+
+	// Start JobManager workers & reconcile stale in-flight jobs on startup (Phase 3)
+	if router.JobManager != nil {
+		if err := router.JobManager.Start(rootCtx); err != nil {
+			logger.Error("FATAL: Failed to start background job manager", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		defer router.JobManager.Stop()
+	}
 
 	// Configure HTTP Server with robust timeouts
 	serverAddr := cfg.ServerAddress()

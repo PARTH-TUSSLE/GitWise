@@ -6,9 +6,13 @@ import (
 
 	"github.com/gitwise/backend/internal/api/handlers"
 	"github.com/gitwise/backend/internal/api/middleware"
+	"github.com/gitwise/backend/internal/api/sse"
 	"github.com/gitwise/backend/internal/config"
+	"github.com/gitwise/backend/internal/git"
 	"github.com/gitwise/backend/internal/github"
+	"github.com/gitwise/backend/internal/jobs"
 	"github.com/gitwise/backend/internal/service/gitstat"
+	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/gitwise/backend/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -16,9 +20,11 @@ import (
 
 type Router struct {
 	chi.Router
-	logger *slog.Logger
-	cfg    *config.Config
-	db     *postgres.DB
+	logger     *slog.Logger
+	cfg        *config.Config
+	db         *postgres.DB
+	JobManager *jobs.JobManager
+	SSEBroker  *sse.Broker
 }
 
 func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version string) *Router {
@@ -39,22 +45,41 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	ghClient := github.NewClient(cfg.GitHubAPIBaseURL, cfg.GitHubToken, logger)
 	gitstatSvc := gitstat.NewService(ghClient, db, logger)
 
+	// Phase 3 Ingestion, Jobs & SSE Infrastructure
+	sseBroker := sse.NewBroker(logger)
+	gitFetcher := git.NewGitHubFetcher(cfg.GitHubAPIBaseURL, cfg.GitHubToken, logger)
+	var jobManager *jobs.JobManager
+	var repoSvc *repo.Service
+
+	if db != nil && db.DB != nil {
+		jobManager = jobs.NewJobManager(db.DB, 4, 128, logger, sseBroker)
+		repoSvc = repo.NewService(db.DB, gitFetcher, jobManager, logger)
+	}
+
 	gitstatH := handlers.NewGitStatHandler(gitstatSvc, logger)
-	repoH := handlers.NewRepoHandler()
+	repoH := handlers.NewRepoHandler(repoSvc, jobManager, sseBroker, logger)
 
 	r.Route("/api/v1", func(v1 chi.Router) {
 		// Telemetry & GITSTAT routes
 		v1.Get("/gitstat/{username}", gitstatH.GetProfile)
 
-		// Repository intelligence routes
+		// Repository intelligence & Ingestion routes (Phase 3)
+		v1.Post("/repositories/ingest", repoH.IngestRepository)
 		v1.Get("/repositories/{owner}/{repo}", repoH.GetRepository)
+		v1.Get("/repositories/{owner}/{repo}/snapshots/{commitSha}/files", repoH.GetSnapshotFiles)
+
+		// Background Jobs & SSE streaming (Phase 3)
+		v1.Get("/jobs/{id}", repoH.GetJob)
+		v1.Get("/jobs/{id}/stream", repoH.GetJobStream)
 	})
 
 	return &Router{
-		Router: r,
-		logger: logger,
-		cfg:    cfg,
-		db:     db,
+		Router:     r,
+		logger:     logger,
+		cfg:        cfg,
+		db:         db,
+		JobManager: jobManager,
+		SSEBroker:  sseBroker,
 	}
 }
 
