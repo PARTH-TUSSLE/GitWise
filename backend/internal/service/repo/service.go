@@ -668,10 +668,23 @@ func (s *Service) failJobAndSnapshot(jobID uuid.UUID, snapshotID *uuid.UUID, err
 	defer cancel()
 
 	if snapshotID != nil {
-		_ = s.updateSnapshotStatus(cleanupCtx, *snapshotID, domain.SnapshotStatusFailed)
+		if err := s.updateSnapshotStatus(cleanupCtx, *snapshotID, domain.SnapshotStatusFailed); err != nil {
+			s.logger.Error("Failed to update snapshot status during error cleanup",
+				slog.String("snapshot_id", snapshotID.String()),
+				slog.String("job_id", jobID.String()),
+				slog.String("original_error", errMsg),
+				slog.String("cleanup_error", err.Error()),
+			)
+		}
 	}
 	if s.jobManager != nil {
-		_ = s.jobManager.FailJob(cleanupCtx, jobID, errMsg)
+		if err := s.jobManager.FailJob(cleanupCtx, jobID, errMsg); err != nil {
+			s.logger.Error("Failed to update job status during error cleanup",
+				slog.String("job_id", jobID.String()),
+				slog.String("original_error", errMsg),
+				slog.String("cleanup_error", err.Error()),
+			)
+		}
 	}
 }
 

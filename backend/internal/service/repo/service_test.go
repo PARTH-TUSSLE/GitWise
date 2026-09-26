@@ -1,6 +1,7 @@
 package repo_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -1397,5 +1399,76 @@ func TestService_ProcessIngestion_DeterministicDominantLanguageTieBreak(t *testi
 
 	if recordedPrimaryLang != "Go" {
 		t.Errorf("expected deterministic tie-break language 'Go', got: %s", recordedPrimaryLang)
+	}
+}
+
+func TestService_FailJobAndSnapshot_LogsCleanupErrors(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_fail_cleanup_errors")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	repoID := uuid.New()
+	snapshotID := uuid.New()
+	jobID := uuid.New()
+	now := time.Now()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	testRepoDriver.mu.Lock()
+	testRepoDriver.handler = func(query string, args []driver.NamedValue) (driver.Rows, driver.Result, error) {
+		if strings.Contains(query, "FROM analysis_jobs") && strings.Contains(query, "WHERE id = $1") {
+			return &fakeRepoRows{
+				cols: []string{"id", "type", "snapshot_id", "status", "stage", "progress_percent", "error_message", "retry_count", "created_at", "updated_at"},
+				data: [][]driver.Value{
+					{jobID.String(), string(domain.JobTypeSnapshotIngest), snapshotID.String(), string(domain.JobStatusQueued), string(domain.JobStageInitializing), 0.0, nil, 0, now, now},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "FROM repository_snapshots s") {
+			return &fakeRepoRows{
+				cols: []string{
+					"s.id", "s.repository_id", "s.commit_sha", "s.ref_name", "s.status", "s.total_files", "s.total_lines", "primary_language", "s.analyzed_at", "s.expires_at", "s.created_at",
+					"r.id", "r.github_id", "r.owner", "r.name", "r.default_branch", "r.is_private", "r.created_at", "r.updated_at",
+				},
+				data: [][]driver.Value{
+					{
+						snapshotID.String(), repoID.String(), "commit", "main", string(domain.SnapshotStatusQueued), 0, 0, nil, nil, nil, now,
+						repoID.String(), int64(123), "owner", "repo", "main", false, now, now,
+					},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		// Simulate DB going down during error cleanup updates
+		if strings.Contains(query, "UPDATE repository_snapshots") {
+			return nil, nil, errors.New("simulated db connection timeout during snapshot status update")
+		}
+		if strings.Contains(query, "UPDATE analysis_jobs") {
+			return nil, nil, errors.New("simulated db connection timeout during job status update")
+		}
+		return &fakeRepoRows{}, driver.RowsAffected(1), nil
+	}
+	testRepoDriver.mu.Unlock()
+
+	files := []git.FileEntry{{Path: "main.go", Content: "package main"}}
+	fetcher := git.NewMockFetcher("commit", files)
+	fetcher.Err = errors.New("upstream git fetch error") // triggers error cleanup
+
+	jm := jobs.NewJobManager(db, 1, 5, logger, nil)
+	svc := repo.NewService(db, fetcher, jm, logger)
+
+	err = svc.ProcessIngestion(context.Background(), jobID)
+	if err == nil {
+		t.Fatal("expected ProcessIngestion to return fetch error, got nil")
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Failed to update snapshot status during error cleanup") {
+		t.Errorf("expected cleanup snapshot failure to be logged, log output: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "Failed to update job status during error cleanup") {
+		t.Errorf("expected cleanup job failure to be logged, log output: %s", logOutput)
 	}
 }
