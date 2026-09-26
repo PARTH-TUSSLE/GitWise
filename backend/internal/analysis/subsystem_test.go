@@ -90,3 +90,59 @@ func TestBuildRepoTree(t *testing.T) {
 		t.Error("expected top-level directory to sort before files")
 	}
 }
+
+func TestClassifySubsystems_BackendPrefixes(t *testing.T) {
+	files := []domain.RepositoryFile{
+		{Path: "backend/internal/foo.go", Language: "Go", SizeBytes: 100},
+		{Path: "backend/pkg/foo.go", Language: "Go", SizeBytes: 200},
+		{Path: "backend/api/foo.go", Language: "Go", SizeBytes: 300},
+	}
+
+	subsystems := analysis.ClassifySubsystems(files, nil)
+
+	subMap := make(map[string]domain.SubsystemNode)
+	for _, s := range subsystems {
+		subMap[s.ID] = s
+	}
+
+	// Verify backend/internal/foo.go -> core-service
+	if core, ok := subMap["core-service"]; !ok {
+		t.Error("expected backend/internal/... to be classified under core-service")
+	} else if core.FileCount != 1 {
+		t.Errorf("expected 1 file in core-service, got %d", core.FileCount)
+	}
+
+	// Verify backend/pkg/foo.go -> public-pkg
+	if pkg, ok := subMap["public-pkg"]; !ok {
+		t.Error("expected backend/pkg/... to be classified under public-pkg")
+	} else if pkg.FileCount != 1 {
+		t.Errorf("expected 1 file in public-pkg, got %d", pkg.FileCount)
+	}
+
+	// Verify backend/api/foo.go -> api-server
+	if api, ok := subMap["api-server"]; !ok {
+		t.Error("expected backend/api/... to be classified under api-server")
+	} else if api.FileCount != 1 {
+		t.Errorf("expected 1 file in api-server, got %d", api.FileCount)
+	}
+}
+
+func TestDetectDominantLanguage_DeterministicTieBreak(t *testing.T) {
+	// Equal counts: 1 Go file and 1 TypeScript file
+	// Tie-break rule: "Go" < "TypeScript" alphabetically -> "Go" wins deterministically every time
+	files := []domain.RepositoryFile{
+		{Path: "backend/internal/foo.go", Language: "TypeScript", SizeBytes: 100},
+		{Path: "backend/internal/bar.go", Language: "Go", SizeBytes: 100},
+	}
+
+	// Run multiple iterations to verify stability against randomized map iteration order
+	for i := 0; i < 20; i++ {
+		subsystems := analysis.ClassifySubsystems(files, nil)
+		if len(subsystems) == 0 {
+			t.Fatal("expected at least 1 subsystem")
+		}
+		if subsystems[0].Language != "Go" {
+			t.Fatalf("iteration %d: expected deterministic tie-break 'Go', got %s", i, subsystems[0].Language)
+		}
+	}
+}

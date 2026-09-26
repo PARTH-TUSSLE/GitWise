@@ -141,14 +141,34 @@ func ClassifySubsystems(files []domain.RepositoryFile, symbols []domain.CodeSymb
 }
 
 func findMatchingSubsystem(filePath string) SubsystemDefinition {
+	// 1. Direct match on top-level subsystem prefixes (cmd/, internal/, pkg/, etc.)
 	for _, def := range DefaultSubsystems {
 		if strings.HasPrefix(filePath, def.PathPrefix) {
 			return def
 		}
 	}
 
-	// Check top-level directory if not in default prefixes
+	// 2. Common nested repository layouts (e.g. backend/internal/..., backend/pkg/..., backend/api/...)
 	parts := strings.Split(filePath, "/")
+	if len(parts) > 2 {
+		subPath := strings.Join(parts[1:], "/")
+		for _, def := range DefaultSubsystems {
+			if strings.HasPrefix(subPath, def.PathPrefix) {
+				return def
+			}
+		}
+	}
+	if len(parts) > 3 {
+		// Nested monorepo layout (e.g. apps/web/src/components/...)
+		subPath2 := strings.Join(parts[2:], "/")
+		for _, def := range DefaultSubsystems {
+			if strings.HasPrefix(subPath2, def.PathPrefix) {
+				return def
+			}
+		}
+	}
+
+	// 3. Fallback to top-level directory if not matching known architectural patterns
 	if len(parts) > 1 {
 		firstDir := parts[0] + "/"
 		return SubsystemDefinition{
@@ -160,7 +180,7 @@ func findMatchingSubsystem(filePath string) SubsystemDefinition {
 		}
 	}
 
-	// Root files
+	// 4. Root files
 	return SubsystemDefinition{
 		ID:          "root",
 		Name:        "Root & Configuration",
@@ -192,6 +212,9 @@ func detectEntryPoint(files []domain.RepositoryFile) string {
 	return files[0].Path
 }
 
+// detectDominantLanguage determines the primary language for a subsystem.
+// Deterministic tie-break rule: highest file count wins; on equal counts,
+// the lexicographically smaller language name (alphabetical order) wins.
 func detectDominantLanguage(files []domain.RepositoryFile) string {
 	langCounts := make(map[string]int)
 	for _, f := range files {
@@ -200,13 +223,20 @@ func detectDominantLanguage(files []domain.RepositoryFile) string {
 		}
 	}
 
+	if len(langCounts) == 0 {
+		return "Plain Text"
+	}
+
 	maxCount := -1
-	dominant := "Plain Text"
+	dominant := ""
 	for lang, count := range langCounts {
-		if count > maxCount {
+		if count > maxCount || (count == maxCount && (dominant == "" || lang < dominant)) {
 			maxCount = count
 			dominant = lang
 		}
+	}
+	if dominant == "" {
+		return "Plain Text"
 	}
 	return dominant
 }
