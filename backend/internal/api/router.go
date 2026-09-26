@@ -7,6 +7,8 @@ import (
 	"github.com/gitwise/backend/internal/api/handlers"
 	"github.com/gitwise/backend/internal/api/middleware"
 	"github.com/gitwise/backend/internal/config"
+	"github.com/gitwise/backend/internal/github"
+	"github.com/gitwise/backend/internal/service/gitstat"
 	"github.com/gitwise/backend/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
@@ -33,8 +35,11 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	healthH := handlers.NewHealthHandler(db, version)
 	r.Get("/healthz", healthH.ServeHTTP)
 
-	// API v1 routes
-	gitstatH := handlers.NewGitStatHandler()
+	// API v1 services & handlers
+	ghClient := github.NewClient(cfg.GitHubAPIBaseURL, cfg.GitHubToken, logger)
+	gitstatSvc := gitstat.NewService(ghClient, db, logger)
+
+	gitstatH := handlers.NewGitStatHandler(gitstatSvc)
 	repoH := handlers.NewRepoHandler()
 
 	r.Route("/api/v1", func(v1 chi.Router) {

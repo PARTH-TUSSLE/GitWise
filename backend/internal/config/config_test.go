@@ -27,6 +27,9 @@ func TestConfig_Defaults(t *testing.T) {
 	if cfg.ServerAddress() != "0.0.0.0:8080" {
 		t.Errorf("expected 0.0.0.0:8080, got %s", cfg.ServerAddress())
 	}
+	if cfg.GitHubAPIBaseURL != "https://api.github.com" {
+		t.Errorf("expected default github api url https://api.github.com, got %s", cfg.GitHubAPIBaseURL)
+	}
 }
 
 func TestConfig_CustomEnv(t *testing.T) {

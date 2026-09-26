@@ -7,15 +7,19 @@ import (
 	"strings"
 
 	"github.com/gitwise/backend/internal/domain"
+	"github.com/gitwise/backend/internal/github"
+	"github.com/gitwise/backend/internal/service/gitstat"
 	"github.com/go-chi/chi/v5"
 )
 
 type GitStatHandler struct {
+	service  *gitstat.Service
 	profiles map[string]domain.ContributorProfile
 }
 
-func NewGitStatHandler() *GitStatHandler {
+func NewGitStatHandler(service *gitstat.Service) *GitStatHandler {
 	handler := &GitStatHandler{
+		service:  service,
 		profiles: make(map[string]domain.ContributorProfile),
 	}
 	handler.initMockProfiles()
@@ -25,72 +29,135 @@ func NewGitStatHandler() *GitStatHandler {
 func (h *GitStatHandler) GetProfile(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	if username == "" {
-		http.Error(w, `{"error":"username is required"}`, http.StatusBadRequest)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "username is required"})
 		return
 	}
 
-	normUser := strings.ToLower(username)
+	normUser := strings.ToLower(strings.TrimSpace(username))
+	refresh := r.URL.Query().Get("refresh") == "true"
+
+	// If live gitstat service is available, query live GitHub data
+	if h.service != nil {
+		profile, err := h.service.GetProfile(r.Context(), username, refresh)
+		if err == nil && profile != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(profile)
+			return
+		}
+
+		if github.IsNotFound(err) {
+			// Check if this is a known curated demo mock profile (e.g. alexr_dev)
+			if mock, exists := h.profiles[normUser]; exists {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(mock)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":   "user not found",
+				"message": fmt.Sprintf("GitHub user '%s' was not found or is suspended", username),
+			})
+			return
+		}
+
+		if github.IsRateLimit(err) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"error":   "rate limit exceeded",
+				"message": "GitHub API rate limit exceeded. Please configure a GITHUB_TOKEN or retry later.",
+			})
+			return
+		}
+
+		// Non-rate-limit error: check mock profile fallback for demo handles
+		if mock, exists := h.profiles[normUser]; exists {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mock)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "failed to fetch profile",
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Fallback to static mock / dynamic profile when service is nil
 	profile, exists := h.profiles[normUser]
 	if !exists {
-		// Dynamic profile fallback with explicit provenance tracking
-		profile = domain.ContributorProfile{
-			Username:         username,
-			Name:             fmt.Sprintf("@%s", username),
-			AvatarURL:        fmt.Sprintf("https://github.com/%s.png", username),
-			Title:            "Open Source Contributor",
-			Bio:              "Autonomous developer contributing to open-source software.",
-			Joined:           "2023",
-			Status:           "Active Contributor",
-			PrimaryLanguages: []string{"Go", "TypeScript", "Python"},
-			Metrics: domain.ContributorMetrics{
-				MergedPRs:               12,
-				OpenPRs:                 2,
-				CodeReviewsGiven:        34,
-				ReviewCommentVolume:     88,
-				IssuesOpened:            8,
-				IssuesParticipatedIn:    21,
-				IssuesLinkedToMergedPRs: 10,
-				ActiveRepositories:      3,
-				TotalCommits:            210,
-				LinesAdded:              4500,
-				LinesDeleted:            1200,
-				FilesChanged:            114,
-				ReviewTurnaroundHours:   6.5,
-				MergeSuccessRatePct:     85.0,
-			},
-			Repositories: []domain.ContributorRepository{
-				{
-					Name:        fmt.Sprintf("%s/workspace", username),
-					Description: "Developer workspace and active contributions",
-					Stars:       15,
-					Forks:       4,
-					Language:    "Go",
-					Commits:     84,
-					PRs:         6,
-					Role:        "Maintainer",
-					EvidenceURL: fmt.Sprintf("https://github.com/%s", username),
-				},
-			},
-			RecentDiffs: []domain.RecentDiff{
-				{
-					ID:         "d-init",
-					Repo:       fmt.Sprintf("%s/workspace", username),
-					CommitHash: "a1b2c3d",
-					Message:    "Initial repository scaffold and setup",
-					Added:      120,
-					Deleted:    5,
-					Timestamp:  "Just now",
-					Type:       "COMMIT",
-				},
-			},
-			ActivityWeeks:  generate52WeeksActivity(1),
-			ProvenanceNote: "Synthesized baseline telemetry profile. Live GitHub API sync available in Phase 2.",
-		}
+		profile = h.generateDynamicFallback(username)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(profile)
+}
+
+func (h *GitStatHandler) generateDynamicFallback(username string) domain.ContributorProfile {
+	return domain.ContributorProfile{
+		Username:         username,
+		Name:             fmt.Sprintf("@%s", username),
+		AvatarURL:        fmt.Sprintf("https://github.com/%s.png", username),
+		Title:            "Open Source Contributor",
+		Bio:              "Autonomous developer contributing to open-source software.",
+		Joined:           "2023",
+		Status:           "Active Contributor",
+		PrimaryLanguages: []string{"Go", "TypeScript", "Python"},
+		Metrics: domain.ContributorMetrics{
+			MergedPRs:               12,
+			OpenPRs:                 2,
+			CodeReviewsGiven:        34,
+			ReviewCommentVolume:     88,
+			IssuesOpened:            8,
+			IssuesParticipatedIn:    21,
+			IssuesLinkedToMergedPRs: 10,
+			ActiveRepositories:      3,
+			TotalCommits:            210,
+			LinesAdded:              4500,
+			LinesDeleted:            1200,
+			FilesChanged:            114,
+			ReviewTurnaroundHours:   6.5,
+			MergeSuccessRatePct:     85.0,
+		},
+		Repositories: []domain.ContributorRepository{
+			{
+				Name:        fmt.Sprintf("%s/workspace", username),
+				Description: "Developer workspace and active contributions",
+				Stars:       15,
+				Forks:       4,
+				Language:    "Go",
+				Commits:     84,
+				PRs:         6,
+				Role:        "Maintainer",
+				EvidenceURL: fmt.Sprintf("https://github.com/%s", username),
+			},
+		},
+		RecentDiffs: []domain.RecentDiff{
+			{
+				ID:         "d-init",
+				Repo:       fmt.Sprintf("%s/workspace", username),
+				CommitHash: "a1b2c3d",
+				Message:    "Initial repository scaffold and setup",
+				Added:      120,
+				Deleted:    5,
+				Timestamp:  "Just now",
+				Type:       "COMMIT",
+			},
+		},
+		ActivityWeeks:  generate52WeeksActivity(1),
+		ProvenanceNote: "Synthesized baseline telemetry profile. Live GitHub API sync available in Phase 2.",
+	}
 }
 
 func generate52WeeksActivity(factor int) []domain.ActivityWeek {

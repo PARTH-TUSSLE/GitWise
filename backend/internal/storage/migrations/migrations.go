@@ -11,3 +11,13 @@ var InitSchemaUp string
 //
 //go:embed 000001_init_schema.down.sql
 var InitSchemaDown string
+
+// GithubGitstatUp contains the Phase 2 schema creation SQL.
+//
+//go:embed 000002_github_gitstat.up.sql
+var GithubGitstatUp string
+
+// GithubGitstatDown contains the Phase 2 schema rollback SQL.
+//
+//go:embed 000002_github_gitstat.down.sql
+var GithubGitstatDown string

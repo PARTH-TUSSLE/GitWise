@@ -9,12 +9,14 @@ import (
 
 // Config represents strongly-typed configuration for the GitWise backend.
 type Config struct {
-	AppEnv         string `env:"APP_ENV" envDefault:"development"`
-	HTTPHost       string `env:"HTTP_HOST" envDefault:"0.0.0.0"`
-	HTTPPort       string `env:"HTTP_PORT" envDefault:"8080"`
-	DatabaseURL    string `env:"DATABASE_URL" envDefault:"postgres://gitwise:gitwise@localhost:5432/gitwise?sslmode=disable"`
-	FrontendOrigin string `env:"FRONTEND_ORIGIN" envDefault:"http://localhost:3000"`
-	LogLevel       string `env:"LOG_LEVEL" envDefault:"info"`
+	AppEnv           string `env:"APP_ENV" envDefault:"development"`
+	HTTPHost         string `env:"HTTP_HOST" envDefault:"0.0.0.0"`
+	HTTPPort         string `env:"HTTP_PORT" envDefault:"8080"`
+	DatabaseURL      string `env:"DATABASE_URL" envDefault:"postgres://gitwise:gitwise@localhost:5432/gitwise?sslmode=disable"`
+	FrontendOrigin   string `env:"FRONTEND_ORIGIN" envDefault:"http://localhost:3000"`
+	LogLevel         string `env:"LOG_LEVEL" envDefault:"info"`
+	GitHubToken      string `env:"GITHUB_TOKEN"`
+	GitHubAPIBaseURL string `env:"GITHUB_API_BASE_URL" envDefault:"https://api.github.com"`
 }
 
 // Load parses environment variables into Config with fail-fast validation.

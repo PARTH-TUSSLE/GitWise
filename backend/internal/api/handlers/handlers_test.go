@@ -2,12 +2,16 @@ package handlers_test
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gitwise/backend/internal/api/handlers"
 	"github.com/gitwise/backend/internal/domain"
+	"github.com/gitwise/backend/internal/github"
+	"github.com/gitwise/backend/internal/service/gitstat"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -40,7 +44,7 @@ func TestHealthHandler(t *testing.T) {
 }
 
 func TestGitStatHandler_PredefinedProfile(t *testing.T) {
-	h := handlers.NewGitStatHandler()
+	h := handlers.NewGitStatHandler(nil)
 
 	r := chi.NewRouter()
 	r.Get("/api/v1/gitstat/{username}", h.GetProfile)
@@ -74,7 +78,7 @@ func TestGitStatHandler_PredefinedProfile(t *testing.T) {
 }
 
 func TestGitStatHandler_DynamicFallbackProfile(t *testing.T) {
-	h := handlers.NewGitStatHandler()
+	h := handlers.NewGitStatHandler(nil)
 
 	r := chi.NewRouter()
 	r.Get("/api/v1/gitstat/{username}", h.GetProfile)
@@ -179,7 +183,7 @@ func TestRouter_NotFound(t *testing.T) {
 }
 
 func TestRouter_MissingParams(t *testing.T) {
-	h := handlers.NewGitStatHandler()
+	h := handlers.NewGitStatHandler(nil)
 	r := chi.NewRouter()
 	r.Get("/api/v1/gitstat/{username}", h.GetProfile)
 
@@ -190,5 +194,64 @@ func TestRouter_MissingParams(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected 404 for trailing slash without username, got %d", rec.Code)
+	}
+}
+
+func TestGitStatHandler_WithLiveService_NotFound(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message": "Not Found"}`))
+	}))
+	defer mockGH.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ghClient := github.NewClient(mockGH.URL, "", logger)
+	svc := gitstat.NewService(ghClient, nil, logger)
+	h := handlers.NewGitStatHandler(svc)
+
+	r := chi.NewRouter()
+	r.Get("/api/v1/gitstat/{username}", h.GetProfile)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/gitstat/definitely_not_a_real_user_404", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for nonexistent user, got %d", rec.Code)
+	}
+
+	var errResp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("failed to decode error json: %v", err)
+	}
+	if errResp["error"] != "user not found" {
+		t.Errorf("expected error 'user not found', got %s", errResp["error"])
+	}
+}
+
+func TestGitStatHandler_WithLiveService_RateLimit(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Limit", "60")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", "1800000000")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "API rate limit exceeded"}`))
+	}))
+	defer mockGH.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ghClient := github.NewClient(mockGH.URL, "", logger)
+	svc := gitstat.NewService(ghClient, nil, logger)
+	h := handlers.NewGitStatHandler(svc)
+
+	r := chi.NewRouter()
+	r.Get("/api/v1/gitstat/{username}", h.GetProfile)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/gitstat/rate_limited_user", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for rate limit, got %d", rec.Code)
 	}
 }

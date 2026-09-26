@@ -17,7 +17,7 @@ import (
 	"github.com/gitwise/backend/internal/storage/postgres"
 )
 
-const AppVersion = "2.1.0-phase1"
+const AppVersion = "2.1.0-phase2"
 
 func main() {
 	cfg, err := config.Load()
@@ -75,9 +75,13 @@ func main() {
 		}
 	}()
 
-	// Auto-apply Phase 1 database schema migrations
+	// Auto-apply Phase 1 & Phase 2 database schema migrations
 	if err := db.ApplyMigrations(rootCtx, migrations.InitSchemaUp); err != nil {
-		logger.Error("FATAL: Failed to apply database migrations", slog.String("error", err.Error()))
+		logger.Error("FATAL: Failed to apply Phase 1 database migrations", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	if err := db.ApplyMigrations(rootCtx, migrations.GithubGitstatUp); err != nil {
+		logger.Error("FATAL: Failed to apply Phase 2 database migrations", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
