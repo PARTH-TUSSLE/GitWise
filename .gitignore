@@ -12,6 +12,7 @@ dist/
 # Scratch & temporary agent/development artifacts
 scratch/
 .agents/
+skills-lock.json
 .impeccable/
 *.log
 
