@@ -2,6 +2,9 @@ package repo_test
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/gitwise/backend/internal/storage/migrations"
 	"github.com/gitwise/backend/internal/storage/postgres"
+	"github.com/google/uuid"
 )
 
 func TestService_PostgresIntegration_LifecycleAndSymbolPersistence(t *testing.T) {
@@ -37,6 +41,26 @@ func TestService_PostgresIntegration_LifecycleAndSymbolPersistence(t *testing.T)
 		t.Fatalf("failed to run migrations on postgres: %v", err)
 	}
 
+	// Generate isolated, unique identifiers per test run to prevent cross-run collisions
+	testID := uuid.New().String()
+	testOwner := fmt.Sprintf("integ-owner-%s", testID)
+	testRepo := fmt.Sprintf("integ-repo-%s", testID)
+
+	shaBytes := make([]byte, 20)
+	if _, err := crand.Read(shaBytes); err != nil {
+		t.Fatalf("failed to generate random commit SHA: %v", err)
+	}
+	commitSHA := hex.EncodeToString(shaBytes)
+
+	// Clean up all test data on completion (cascades to snapshots, files, symbols, and jobs)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		if _, err := pgDB.DB.ExecContext(cleanupCtx, "DELETE FROM repositories WHERE owner = $1 AND name = $2", testOwner, testRepo); err != nil {
+			t.Logf("cleanup failed for repository %s/%s: %v", testOwner, testRepo, err)
+		}
+	})
+
 	// Test real end-to-end ingestion and symbol persistence with live PostgreSQL
 	goCode := `package main
 
@@ -49,7 +73,6 @@ func StartServer() error {
 	return nil
 }
 `
-	commitSHA := "1122334455667788990011223344556677889900"
 	files := []git.FileEntry{
 		{Path: "server.go", Extension: ".go", Language: "Go", SizeBytes: len(goCode), LineCount: 11, SHA256Hash: "hash-real", Content: goCode},
 	}
@@ -58,7 +81,7 @@ func StartServer() error {
 	jm := jobs.NewJobManager(pgDB.DB, 1, 5, logger, broker)
 	svc := repo.NewService(pgDB.DB, fetcher, jm, logger)
 
-	job, snap, err := svc.Ingest(ctx, "integration-owner", "integration-repo", "main")
+	job, snap, err := svc.Ingest(ctx, testOwner, testRepo, "main")
 	if err != nil {
 		t.Fatalf("ingest failed on real postgres: %v", err)
 	}
@@ -72,7 +95,7 @@ func StartServer() error {
 	}
 
 	// Verify symbols query against real PostgreSQL tables and constraints
-	symbols, err := svc.GetSnapshotSymbols(ctx, "integration-owner", "integration-repo", commitSHA, "")
+	symbols, err := svc.GetSnapshotSymbols(ctx, testOwner, testRepo, commitSHA, "")
 	if err != nil {
 		t.Fatalf("failed to query symbols from postgres: %v", err)
 	}
