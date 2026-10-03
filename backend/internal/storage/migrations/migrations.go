@@ -91,3 +91,13 @@ var IssueBlueprintsUp string
 //
 //go:embed 000009_issue_blueprints.down.sql
 var IssueBlueprintsDown string
+
+// PullRequestsAndReviewsUp contains the Phase 9 pull_requests and pr_reviews schema creation SQL.
+//
+//go:embed 000010_pull_requests_and_reviews.up.sql
+var PullRequestsAndReviewsUp string
+
+// PullRequestsAndReviewsDown contains the Phase 9 pull_requests and pr_reviews schema rollback SQL.
+//
+//go:embed 000010_pull_requests_and_reviews.down.sql
+var PullRequestsAndReviewsDown string
