@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"time"
 )
@@ -251,4 +253,109 @@ func (c *Client) GetRepoIssues(ctx context.Context, owner, repo string, perPage 
 	}
 
 	return issues, nil
+}
+
+// GHPullRequest represents a GitHub pull request response.
+type GHPullRequest struct {
+	ID        int64     `json:"id"`
+	Number    int       `json:"number"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Head struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	} `json:"base"`
+	Additions    int `json:"additions"`
+	Deletions    int `json:"deletions"`
+	ChangedFiles int `json:"changed_files"`
+	Commits      int `json:"commits"`
+}
+
+// GetPullRequest fetches details for a specific pull request.
+func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number int) (*GHPullRequest, error) {
+	endpoint := fmt.Sprintf("/repos/%s/%s/pulls/%d", url.PathEscape(owner), url.PathEscape(repo), number)
+	resp, err := c.Do(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := c.checkResponseStatus(resp, "pull_request", fmt.Sprintf("%s/%s#%d", owner, repo, number)); err != nil {
+		return nil, err
+	}
+
+	var pr GHPullRequest
+	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
+		return nil, fmt.Errorf("failed to decode pull request json: %w", err)
+	}
+
+	return &pr, nil
+}
+
+// GetRepoPullRequests fetches recent open pull requests for a repository.
+func (c *Client) GetRepoPullRequests(ctx context.Context, owner, repo string, perPage int) ([]GHPullRequest, error) {
+	if perPage <= 0 || perPage > 100 {
+		perPage = 30
+	}
+	endpoint := fmt.Sprintf("/repos/%s/%s/pulls?state=open&sort=updated&per_page=%d",
+		url.PathEscape(owner), url.PathEscape(repo), perPage,
+	)
+
+	resp, err := c.Do(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := c.checkResponseStatus(resp, "repo_pulls", fmt.Sprintf("%s/%s", owner, repo)); err != nil {
+		return nil, err
+	}
+
+	var prs []GHPullRequest
+	if err := json.NewDecoder(resp.Body).Decode(&prs); err != nil {
+		return nil, fmt.Errorf("failed to decode repo pull requests json: %w", err)
+	}
+
+	return prs, nil
+}
+
+// GetPullRequestDiff fetches the raw unified diff for a pull request.
+func (c *Client) GetPullRequestDiff(ctx context.Context, owner, repo string, number int) (string, error) {
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", c.baseURL, url.PathEscape(owner), url.PathEscape(repo), number)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+	req.Header.Set("User-Agent", "GitWise-Backend/2.1")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch pr diff: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch pr diff: status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read pr diff: %w", err)
+	}
+
+	return string(body), nil
 }
