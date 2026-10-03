@@ -209,3 +209,69 @@ func TestGitStatService_Caching(t *testing.T) {
 		t.Errorf("expected 2 requests with forceRefresh, got %d", requestsCount)
 	}
 }
+
+func TestGitStatService_TurnaroundAndLinesCalculation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/users/metricuser" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"login": "metricuser", "name": "Metric User", "created_at": "2020-01-01T00:00:00Z"}`))
+			return
+		}
+		if r.URL.Path == "/users/metricuser/repos" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"name": "repo1", "full_name": "metricuser/repo1", "stargazers_count": 10, "owner": {"login": "metricuser"}}]`))
+			return
+		}
+		if r.URL.Path == "/users/metricuser/events/public" {
+			w.WriteHeader(http.StatusOK)
+			// PR took 6 hours from creation to merge, with 120 additions and 30 deletions
+			_, _ = w.Write([]byte(`[
+				{
+					"id": "100",
+					"type": "PullRequestEvent",
+					"created_at": "2026-03-01T16:00:00Z",
+					"repo": {"name": "metricuser/repo1"},
+					"payload": {
+						"action": "closed",
+						"pull_request": {
+							"created_at": "2026-03-01T10:00:00Z",
+							"merged_at": "2026-03-01T16:00:00Z",
+							"additions": 120,
+							"deletions": 30,
+							"changed_files": 3
+						}
+					}
+				}
+			]`))
+			return
+		}
+		if r.URL.Path == "/search/issues" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"total_count": 5}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ghClient := github.NewClient(server.URL, "", logger)
+	svc := gitstat.NewService(ghClient, nil, logger)
+
+	profile, err := svc.GetProfile(context.Background(), "metricuser", false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if profile.Metrics.LinesAdded != 120 {
+		t.Errorf("expected 120 lines added, got %d", profile.Metrics.LinesAdded)
+	}
+	if profile.Metrics.LinesDeleted != 30 {
+		t.Errorf("expected 30 lines deleted, got %d", profile.Metrics.LinesDeleted)
+	}
+	if profile.Metrics.ReviewTurnaroundHours != 6.0 {
+		t.Errorf("expected 6.0 review turnaround hours, got %.1f", profile.Metrics.ReviewTurnaroundHours)
+	}
+}

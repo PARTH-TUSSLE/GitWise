@@ -15,9 +15,10 @@ import (
 	"github.com/gitwise/backend/internal/config"
 	"github.com/gitwise/backend/internal/storage/migrations"
 	"github.com/gitwise/backend/internal/storage/postgres"
+	"github.com/gitwise/backend/pkg/logger"
 )
 
-const AppVersion = "2.1.0-phase3"
+const AppVersion = "2.1.0-production"
 
 func main() {
 	cfg, err := config.Load()
@@ -26,30 +27,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize structured logger
-	var logLevel slog.Level
-	switch cfg.LogLevel {
-	case "debug":
-		logLevel = slog.LevelDebug
-	case "warn":
-		logLevel = slog.LevelWarn
-	case "error":
-		logLevel = slog.LevelError
-	default:
-		logLevel = slog.LevelInfo
-	}
+	// Initialize structured logger from pkg/logger
+	appLog := logger.New(logger.Config{
+		Environment: cfg.AppEnv,
+		Level:       cfg.LogLevel,
+		AddSource:   cfg.AppEnv == "production",
+	})
+	slog.SetDefault(appLog)
 
-	var handler slog.Handler
-	if cfg.AppEnv == "production" {
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
-	} else {
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel})
-	}
-
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
-	logger.Info("Starting GitWise Backend Server",
+	appLog.Info("Starting GitWise Backend Server",
 		slog.String("version", AppVersion),
 		slog.String("environment", cfg.AppEnv),
 		slog.String("host", cfg.HTTPHost),
@@ -62,32 +48,32 @@ func main() {
 	defer rootCancel()
 
 	// Connect to PostgreSQL (fail clearly if unreachable)
-	db, err := postgres.New(rootCtx, cfg.DatabaseURL, logger)
+	db, err := postgres.New(rootCtx, cfg.DatabaseURL, appLog)
 	if err != nil {
-		logger.Error("FATAL: Failed to connect to PostgreSQL database",
+		appLog.Error("FATAL: Failed to connect to PostgreSQL database",
 			slog.String("error", err.Error()),
 		)
 		os.Exit(1)
 	}
 	defer func() {
 		if err := db.Close(); err != nil {
-			logger.Error("Error closing database connection", slog.String("error", err.Error()))
+			appLog.Error("Error closing database connection", slog.String("error", err.Error()))
 		}
 	}()
 
 	// Auto-apply pending database schema migrations in version order
-	if err := migrations.Run(rootCtx, db.DB, logger); err != nil {
-		logger.Error("FATAL: Failed to apply database schema migrations", slog.String("error", err.Error()))
+	if err := migrations.Run(rootCtx, db.DB, appLog); err != nil {
+		appLog.Error("FATAL: Failed to apply database schema migrations", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
 	// Initialize Router
-	router := api.NewRouter(cfg, db, logger, AppVersion)
+	router := api.NewRouter(cfg, db, appLog, AppVersion)
 
 	// Start JobManager workers & reconcile stale in-flight jobs on startup (Phase 3)
 	if router.JobManager != nil {
 		if err := router.JobManager.Start(rootCtx); err != nil {
-			logger.Error("FATAL: Failed to start background job manager", slog.String("error", err.Error()))
+			appLog.Error("FATAL: Failed to start background job manager", slog.String("error", err.Error()))
 			os.Exit(1)
 		}
 		defer router.JobManager.Stop()
@@ -111,7 +97,7 @@ func main() {
 	// Start server in background goroutine
 	serverErrors := make(chan error, 1)
 	go func() {
-		logger.Info("HTTP listener active", slog.String("addr", serverAddr))
+		appLog.Info("HTTP listener active", slog.String("addr", serverAddr))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErrors <- err
 		}
@@ -120,19 +106,19 @@ func main() {
 	// Wait for shutdown signal or fatal error
 	select {
 	case err := <-serverErrors:
-		logger.Error("Fatal server error occurred", slog.String("error", err.Error()))
+		appLog.Error("Fatal server error occurred", slog.String("error", err.Error()))
 		os.Exit(1)
 	case sig := <-shutdownChan:
-		logger.Info("Received termination signal, initiating graceful shutdown", slog.String("signal", sig.String()))
+		appLog.Info("Received termination signal, initiating graceful shutdown", slog.String("signal", sig.String()))
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			logger.Error("Graceful shutdown failed, forcing close", slog.String("error", err.Error()))
+			appLog.Error("Graceful shutdown failed, forcing close", slog.String("error", err.Error()))
 			_ = srv.Close()
 		} else {
-			logger.Info("Server stopped cleanly")
+			appLog.Info("Server stopped cleanly")
 		}
 	}
 }
