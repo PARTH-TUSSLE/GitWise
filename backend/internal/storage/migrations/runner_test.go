@@ -19,8 +19,8 @@ func TestLoadMigrations_Embedded(t *testing.T) {
 		t.Fatalf("failed to load embedded migrations: %v", err)
 	}
 
-	if len(list) < 8 {
-		t.Fatalf("expected at least 8 migrations, got %d", len(list))
+	if len(list) < 9 {
+		t.Fatalf("expected at least 9 migrations, got %d", len(list))
 	}
 
 	// Verify versions strictly sorted in ascending order
@@ -31,7 +31,7 @@ func TestLoadMigrations_Embedded(t *testing.T) {
 		}
 	}
 
-	// Verify versions 1-8
+	// Verify versions 1-9
 	if list[0].Version != 1 || list[0].Name != "000001_init_schema" {
 		t.Errorf("expected version 1 to be 000001_init_schema, got: %+v", list[0])
 	}
@@ -55,6 +55,9 @@ func TestLoadMigrations_Embedded(t *testing.T) {
 	}
 	if list[7].Version != 8 || list[7].Name != "000008_mentor_sessions_and_chat" {
 		t.Errorf("expected version 8 to be 000008_mentor_sessions_and_chat, got: %+v", list[7])
+	}
+	if list[8].Version != 9 || list[8].Name != "000009_issue_blueprints" {
+		t.Errorf("expected version 9 to be 000009_issue_blueprints, got: %+v", list[8])
 	}
 
 	// Verify SQL contents are loaded

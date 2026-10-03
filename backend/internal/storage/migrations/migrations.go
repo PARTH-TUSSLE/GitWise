@@ -81,3 +81,13 @@ var MentorSessionsAndChatUp string
 //
 //go:embed 000008_mentor_sessions_and_chat.down.sql
 var MentorSessionsAndChatDown string
+
+// IssueBlueprintsUp contains the Phase 8 issues and issue_blueprints schema creation SQL.
+//
+//go:embed 000009_issue_blueprints.up.sql
+var IssueBlueprintsUp string
+
+// IssueBlueprintsDown contains the Phase 8 issues and issue_blueprints schema rollback SQL.
+//
+//go:embed 000009_issue_blueprints.down.sql
+var IssueBlueprintsDown string
