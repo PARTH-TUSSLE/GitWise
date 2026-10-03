@@ -432,6 +432,118 @@ func (h *RepoHandler) GetSearch(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(results)
 }
 
+// Chat handles POST /api/v1/repositories/{owner}/{repo}/chat and POST /api/v1/mentor/{owner}/{repo}/chat
+func (h *RepoHandler) Chat(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	if owner == "" || repo == "" {
+		http.Error(w, `{"error":"owner and repo are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	var req domain.ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request payload"}`, http.StatusBadRequest)
+		return
+	}
+
+	req.Message = strings.TrimSpace(req.Message)
+	if req.Message == "" {
+		http.Error(w, `{"error":"message cannot be empty"}`, http.StatusBadRequest)
+		return
+	}
+
+	isStream := req.Stream || strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+
+	if isStream {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, `{"error":"Streaming unsupported"}`, http.StatusInternalServerError)
+			return
+		}
+
+		stream, err := h.repoSvc.ChatStream(r.Context(), owner, repo, req.Ref, req)
+		if err != nil {
+			h.logger.Error("Chat stream failed",
+				slog.String("owner", owner),
+				slog.String("repo", repo),
+				slog.String("error", err.Error()),
+			)
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+
+		for chunk := range stream {
+			chunkBytes, err := json.Marshal(chunk)
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", string(chunkBytes))
+			flusher.Flush()
+		}
+		return
+	}
+
+	// Synchronous response
+	resp, err := h.repoSvc.Chat(r.Context(), owner, repo, req.Ref, req)
+	if err != nil {
+		h.logger.Error("Mentor chat failed",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// GetSessionMessages handles GET /api/v1/mentor/sessions/{sessionId}/messages
+func (h *RepoHandler) GetSessionMessages(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	sessIDStr := chi.URLParam(r, "sessionId")
+	sessID, err := uuid.Parse(sessIDStr)
+	if err != nil {
+		http.Error(w, `{"error":"Invalid session ID format"}`, http.StatusBadRequest)
+		return
+	}
+
+	messages, err := h.repoSvc.GetSessionMessages(r.Context(), sessID)
+	if err != nil {
+		h.logger.Error("Failed to fetch session messages",
+			slog.String("session_id", sessIDStr),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	if messages == nil {
+		messages = []domain.MentorMessage{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(messages)
+}
+
 func (h *RepoHandler) GetRepository(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")

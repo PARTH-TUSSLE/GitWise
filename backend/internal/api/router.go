@@ -79,6 +79,11 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		// Tiered Hybrid Retrieval & Search (Phase 6)
 		v1.Get("/repositories/{owner}/{repo}/search", repoH.GetSearch)
 
+		// Grounded AI Mentorship & Repository Chat (Phase 7)
+		v1.Post("/repositories/{owner}/{repo}/chat", repoH.Chat)
+		v1.Post("/mentor/{owner}/{repo}/chat", repoH.Chat)
+		v1.Get("/mentor/sessions/{sessionId}/messages", repoH.GetSessionMessages)
+
 		// Background Jobs & SSE streaming (Phase 3)
 		v1.Get("/jobs/{id}", repoH.GetJob)
 		v1.Get("/jobs/{id}/stream", repoH.GetJobStream)

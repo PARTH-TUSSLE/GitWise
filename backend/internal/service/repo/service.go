@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gitwise/backend/internal/ai"
 	"github.com/gitwise/backend/internal/analysis"
 	"github.com/gitwise/backend/internal/analysis/golang"
 	"github.com/gitwise/backend/internal/analysis/typescript"
@@ -19,6 +20,7 @@ import (
 	"github.com/gitwise/backend/internal/graph"
 	"github.com/gitwise/backend/internal/jobs"
 	"github.com/gitwise/backend/internal/retrieval"
+	"github.com/gitwise/backend/internal/service/mentor"
 	"github.com/google/uuid"
 )
 
@@ -34,6 +36,7 @@ type Service struct {
 	retrievalSvc     *retrieval.Service
 	chunker          *retrieval.Chunker
 	evidenceStore    *evidence.Store
+	mentorSvc        *mentor.Service
 	logger           *slog.Logger
 }
 
@@ -51,6 +54,8 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 	retrievalSvc := retrieval.NewService(db, mockEmbedder, logger)
 	chunker := retrieval.NewChunker()
 	evidenceStore := evidence.NewStore(db, logger)
+	aiClient := ai.NewMockClient()
+	mentorSvc := mentor.NewService(db, retrievalSvc, evidenceStore, aiClient, logger)
 
 	svc := &Service{
 		db:               db,
@@ -63,6 +68,7 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 		retrievalSvc:     retrievalSvc,
 		chunker:          chunker,
 		evidenceStore:    evidenceStore,
+		mentorSvc:        mentorSvc,
 		logger:           logger,
 	}
 
@@ -102,6 +108,11 @@ func (s *Service) SetChunker(c *retrieval.Chunker) {
 // SetEvidenceStore allows setting a custom evidence store (for testing).
 func (s *Service) SetEvidenceStore(e *evidence.Store) {
 	s.evidenceStore = e
+}
+
+// SetMentorService allows setting a custom mentor service (for testing).
+func (s *Service) SetMentorService(m *mentor.Service) {
+	s.mentorSvc = m
 }
 
 // Ingest triggers or returns an existing snapshot ingestion job for a repository.
@@ -801,6 +812,38 @@ func (s *Service) AssembleEvidence(ctx context.Context, owner, repoName, ref, qu
 	}
 
 	return s.evidenceStore.AssembleEvidencePackage(ctx, snap.ID, snap.CommitSHA, query, refs)
+}
+
+// Chat processes an AI mentor question grounded against repository evidence.
+func (s *Service) Chat(ctx context.Context, owner, repoName, ref string, req domain.ChatRequest) (*domain.ChatResponse, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+	if s.mentorSvc == nil {
+		return nil, errors.New("mentor service is not configured")
+	}
+	return s.mentorSvc.Chat(ctx, snap.ID, snap.CommitSHA, req)
+}
+
+// ChatStream initiates a streaming response for interactive mentor chat.
+func (s *Service) ChatStream(ctx context.Context, owner, repoName, ref string, req domain.ChatRequest) (<-chan domain.ChatStreamChunk, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+	if s.mentorSvc == nil {
+		return nil, errors.New("mentor service is not configured")
+	}
+	return s.mentorSvc.ChatStream(ctx, snap.ID, snap.CommitSHA, req)
+}
+
+// GetSessionMessages fetches chat message history for a mentorship session.
+func (s *Service) GetSessionMessages(ctx context.Context, sessionID uuid.UUID) ([]domain.MentorMessage, error) {
+	if s.mentorSvc == nil {
+		return nil, errors.New("mentor service is not configured")
+	}
+	return s.mentorSvc.GetSessionMessages(ctx, sessionID)
 }
 
 func (s *Service) resolveSnapshotForRef(ctx context.Context, owner, repoName, ref string) (*domain.RepositorySnapshot, error) {

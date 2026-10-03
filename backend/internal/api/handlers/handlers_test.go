@@ -15,6 +15,7 @@ import (
 	"github.com/gitwise/backend/internal/service/gitstat"
 	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -497,5 +498,60 @@ func TestRepoHandler_GetSearch(t *testing.T) {
 
 	if rec2.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 when query q is missing, got %d", rec2.Code)
+	}
+}
+
+func TestRepoHandler_Chat(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Post("/api/v1/repositories/{owner}/{repo}/chat", h.Chat)
+
+	// Missing service -> 503
+	body := strings.NewReader(`{"message":"hello"}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/owner/repo/chat", body)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+
+	// Empty message -> 400
+	hWithSvc := handlers.NewRepoHandler(&repo.Service{}, nil, nil, nil)
+	r2 := chi.NewRouter()
+	r2.Post("/api/v1/repositories/{owner}/{repo}/chat", hWithSvc.Chat)
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/repositories/owner/repo/chat", strings.NewReader(`{"message":"   "}`))
+	rec2 := httptest.NewRecorder()
+	r2.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when message is empty, got %d", rec2.Code)
+	}
+}
+
+func TestRepoHandler_GetSessionMessages(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/mentor/sessions/{sessionId}/messages", h.GetSessionMessages)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/mentor/sessions/"+uuid.New().String()+"/messages", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+
+	// Invalid UUID -> 400
+	hWithSvc := handlers.NewRepoHandler(&repo.Service{}, nil, nil, nil)
+	r2 := chi.NewRouter()
+	r2.Get("/api/v1/mentor/sessions/{sessionId}/messages", hWithSvc.GetSessionMessages)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/mentor/sessions/invalid-uuid/messages", nil)
+	rec2 := httptest.NewRecorder()
+	r2.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when session ID is invalid, got %d", rec2.Code)
 	}
 }
