@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/gitwise/backend/internal/ai"
 	"github.com/gitwise/backend/internal/api/handlers"
 	"github.com/gitwise/backend/internal/api/middleware"
 	"github.com/gitwise/backend/internal/api/sse"
@@ -48,12 +49,26 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	// Phase 3 Ingestion, Jobs & SSE Infrastructure
 	sseBroker := sse.NewBroker(logger)
 	gitFetcher := git.NewGitHubFetcher(cfg.GitHubAPIBaseURL, cfg.GitHubToken, logger)
+
+	// AI Provider Client Configuration (Groq, Ollama, OpenRouter, OpenAI, Gemini, Mock)
+	aiCfg := ai.Config{
+		Provider: ai.ProviderType(cfg.AIProvider),
+		APIKey:   cfg.AIAPIKey,
+		BaseURL:  cfg.AIBaseURL,
+		Model:    cfg.AIModel,
+	}
+	aiClient := ai.NewClient(aiCfg)
+	logger.Info("Configured AI Client",
+		slog.String("provider", cfg.AIProvider),
+		slog.String("model", cfg.AIModel),
+	)
+
 	var jobManager *jobs.JobManager
 	var repoSvc *repo.Service
 
 	if db != nil && db.DB != nil {
 		jobManager = jobs.NewJobManager(db.DB, 4, 128, logger, sseBroker)
-		repoSvc = repo.NewService(db.DB, gitFetcher, jobManager, logger)
+		repoSvc = repo.NewService(db.DB, gitFetcher, jobManager, logger, aiClient)
 	}
 
 	gitstatH := handlers.NewGitStatHandler(gitstatSvc, logger)

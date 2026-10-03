@@ -41,7 +41,13 @@ type Service struct {
 }
 
 // NewService creates a new repository service instance.
-func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, logger *slog.Logger) *Service {
+func NewService(
+	db *sql.DB,
+	fetcher git.Fetcher,
+	jobManager *jobs.JobManager,
+	logger *slog.Logger,
+	optionalAI ...ai.Client,
+) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -54,7 +60,10 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 	retrievalSvc := retrieval.NewService(db, mockEmbedder, logger)
 	chunker := retrieval.NewChunker()
 	evidenceStore := evidence.NewStore(db, logger)
-	aiClient := ai.NewMockClient()
+	var aiClient ai.Client = ai.NewMockClient()
+	if len(optionalAI) > 0 && optionalAI[0] != nil {
+		aiClient = optionalAI[0]
+	}
 	mentorSvc := mentor.NewService(db, retrievalSvc, evidenceStore, aiClient, logger)
 
 	svc := &Service{
@@ -78,6 +87,21 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 	}
 
 	return svc
+}
+
+// SetAIClient updates the active AI client at runtime.
+func (s *Service) SetAIClient(client ai.Client) {
+	if client != nil && s.mentorSvc != nil {
+		s.mentorSvc.SetAIClient(client)
+	}
+}
+
+// AIClient returns the active AI client.
+func (s *Service) AIClient() ai.Client {
+	if s.mentorSvc != nil {
+		return s.mentorSvc.AIClient()
+	}
+	return nil
 }
 
 // SetAnalyzerRegistry allows setting a custom analyzer registry (for testing or plugins).

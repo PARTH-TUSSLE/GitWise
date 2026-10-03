@@ -19,12 +19,13 @@ import (
 
 // Service provides grounded AI mentorship and repository chat with strict citation verification.
 type Service struct {
-	db            *sql.DB
-	retrievalSvc  *retrieval.Service
-	evidenceStore *evidence.Store
-	aiClient      ai.Client
-	validator     *ai.Validator
-	logger        *slog.Logger
+	db              *sql.DB
+	retrievalSvc    *retrieval.Service
+	evidenceStore   *evidence.Store
+	aiClient        ai.Client
+	defaultAIConfig ai.Config
+	validator       *ai.Validator
+	logger          *slog.Logger
 }
 
 // NewService creates a new mentor service instance.
@@ -34,6 +35,7 @@ func NewService(
 	evidenceStore *evidence.Store,
 	aiClient ai.Client,
 	logger *slog.Logger,
+	defaultAIConfig ...ai.Config,
 ) *Service {
 	if logger == nil {
 		logger = slog.Default()
@@ -41,14 +43,72 @@ func NewService(
 	if aiClient == nil {
 		aiClient = ai.NewMockClient()
 	}
-	return &Service{
-		db:            db,
-		retrievalSvc:  retrievalSvc,
-		evidenceStore: evidenceStore,
-		aiClient:      aiClient,
-		validator:     ai.NewValidator(),
-		logger:        logger,
+	var defCfg ai.Config
+	if len(defaultAIConfig) > 0 {
+		defCfg = defaultAIConfig[0]
 	}
+	return &Service{
+		db:              db,
+		retrievalSvc:    retrievalSvc,
+		evidenceStore:   evidenceStore,
+		aiClient:        aiClient,
+		defaultAIConfig: defCfg,
+		validator:       ai.NewValidator(),
+		logger:          logger,
+	}
+}
+
+// SetAIClient updates the active AI client at runtime.
+func (s *Service) SetAIClient(client ai.Client) {
+	if client != nil {
+		s.aiClient = client
+	}
+}
+
+// AIClient returns the active AI client.
+func (s *Service) AIClient() ai.Client {
+	return s.aiClient
+}
+
+// resolveClient handles dynamic per-request model or provider overrides.
+func (s *Service) resolveClient(req domain.ChatRequest) ai.Client {
+	if req.Provider == "" && req.Model == "" && req.BaseURL == "" {
+		return s.aiClient
+	}
+
+	// If using OpenAICompatibleClient and only model changed, reuse client instance
+	if req.Provider == "" && req.BaseURL == "" && req.Model != "" {
+		if oai, ok := s.aiClient.(*ai.OpenAICompatibleClient); ok {
+			return oai.WithModel(req.Model)
+		}
+	}
+
+	provider := ai.ProviderType(strings.ToLower(strings.TrimSpace(req.Provider)))
+	if provider == "" {
+		provider = s.defaultAIConfig.Provider
+		if provider == "" {
+			provider = ai.ProviderGroq
+		}
+	}
+
+	baseURL := req.BaseURL
+	if baseURL == "" {
+		baseURL = s.defaultAIConfig.BaseURL
+	}
+
+	apiKey := s.defaultAIConfig.APIKey
+
+	model := req.Model
+	if model == "" {
+		model = s.defaultAIConfig.Model
+	}
+
+	return ai.NewClient(ai.Config{
+		Provider: provider,
+		APIKey:   apiKey,
+		BaseURL:  baseURL,
+		Model:    model,
+	})
 }
 
 // BuildGroundedPrompt formats the user query alongside retrieved evidence snippets.
@@ -109,8 +169,9 @@ func (s *Service) Chat(
 	}
 
 	// 4. Construct prompt and query AI client
+	client := s.resolveClient(req)
 	prompt := BuildGroundedPrompt(cleanMsg, evidencePkg)
-	rawAnswer, err := s.aiClient.Generate(ctx, prompt)
+	rawAnswer, err := client.Generate(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("AI generation failed: %w", err)
 	}
@@ -158,8 +219,9 @@ func (s *Service) ChatStream(
 	}
 	evidencePkg, _ := s.retrieveEvidence(ctx, snapshotID, commitSHA, cleanMsg, topK)
 
+	client := s.resolveClient(req)
 	prompt := BuildGroundedPrompt(cleanMsg, evidencePkg)
-	tokenStream, err := s.aiClient.GenerateStream(ctx, prompt)
+	tokenStream, err := client.GenerateStream(ctx, prompt)
 	if err != nil {
 		return nil, fmt.Errorf("AI stream generation failed: %w", err)
 	}

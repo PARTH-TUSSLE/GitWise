@@ -4,6 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -151,5 +155,77 @@ func TestService_ChatStream(t *testing.T) {
 	lastChunk := chunks[len(chunks)-1]
 	if !lastChunk.Done {
 		t.Error("expected final chunk to have Done: true")
+	}
+}
+
+func TestService_Chat_DynamicModelSwitching(t *testing.T) {
+	db, err := sql.Open("fake_mentor_driver", "test_dynamic_model")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	snapID := uuid.New()
+	sessID := uuid.New()
+
+	testMentorDriver.handler = func(query string, args []driver.NamedValue) (driver.Rows, driver.Result, error) {
+		if strings.Contains(query, "INSERT INTO mentor_sessions") {
+			return newRows(
+				[]string{"id", "snapshot_id", "title", "created_at", "updated_at"},
+				[][]driver.Value{
+					{sessID.String(), snapID.String(), "Mentorship Session", time.Now(), time.Now()},
+				},
+			), nil, nil
+		}
+		return newRows([]string{}, nil), driver.RowsAffected(1), nil
+	}
+
+	var capturedModel string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if m, ok := req["model"].(string); ok {
+			capturedModel = m
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"test","choices":[{"message":{"content":"Dynamic answer [ev_01]"}}]}`)
+	}))
+	defer ts.Close()
+
+	testClient := ai.NewOpenAICompatibleClient("test-key", ts.URL, "llama-3.3-70b-versatile")
+	svc := mentor.NewService(db, nil, nil, testClient, nil, ai.Config{
+		Provider: ai.ProviderOpenAICompatible,
+		APIKey:   "test-key",
+		BaseURL:  ts.URL,
+		Model:    "llama-3.3-70b-versatile",
+	})
+
+	if svc.AIClient() != testClient {
+		t.Errorf("expected initial AIClient to match testClient")
+	}
+
+	// Runtime client hot-swap
+	mockClient := ai.NewMockClient()
+	svc.SetAIClient(mockClient)
+	if svc.AIClient() != mockClient {
+		t.Errorf("expected updated AIClient to match mockClient")
+	}
+
+	// Swap back to test client
+	svc.SetAIClient(testClient)
+
+	// Request with dynamic model override works cleanly
+	resp, err := svc.Chat(context.Background(), snapID, "commit123", domain.ChatRequest{
+		Message: "How does the system work?",
+		Model:   "llama-3.1-8b-instant",
+	})
+	if err != nil {
+		t.Fatalf("unexpected chat error with model override: %v", err)
+	}
+	if resp == nil || resp.Message == "" {
+		t.Fatal("expected non-empty chat response")
+	}
+	if capturedModel != "llama-3.1-8b-instant" {
+		t.Errorf("expected model override llama-3.1-8b-instant, captured %s", capturedModel)
 	}
 }
