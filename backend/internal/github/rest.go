@@ -176,3 +176,79 @@ func (c *Client) SearchUserIssues(ctx context.Context, username string) (int, er
 
 	return result.TotalCount, nil
 }
+
+// GHIssue represents a GitHub repository issue response.
+type GHIssue struct {
+	ID        int64     `json:"id"`
+	Number    int       `json:"number"`
+	Title     string    `json:"title"`
+	Body      string    `json:"body"`
+	State     string    `json:"state"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	PullRequest *struct {
+		URL string `json:"url"`
+	} `json:"pull_request,omitempty"`
+}
+
+// GetIssue fetches a specific issue by owner, repo name, and issue number.
+func (c *Client) GetIssue(ctx context.Context, owner, repo string, number int) (*GHIssue, error) {
+	endpoint := fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(owner), url.PathEscape(repo), number)
+	resp, err := c.Do(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := c.checkResponseStatus(resp, "issue", fmt.Sprintf("%s/%s#%d", owner, repo, number)); err != nil {
+		return nil, err
+	}
+
+	var issue GHIssue
+	if err := json.NewDecoder(resp.Body).Decode(&issue); err != nil {
+		return nil, fmt.Errorf("failed to decode issue json: %w", err)
+	}
+
+	return &issue, nil
+}
+
+// GetRepoIssues fetches recent issues for a repository (excluding pull requests).
+func (c *Client) GetRepoIssues(ctx context.Context, owner, repo string, perPage int) ([]GHIssue, error) {
+	if perPage <= 0 || perPage > 100 {
+		perPage = 30
+	}
+	endpoint := fmt.Sprintf("/repos/%s/%s/issues?state=open&sort=updated&per_page=%d",
+		url.PathEscape(owner), url.PathEscape(repo), perPage,
+	)
+
+	resp, err := c.Do(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if err := c.checkResponseStatus(resp, "repo_issues", fmt.Sprintf("%s/%s", owner, repo)); err != nil {
+		return nil, err
+	}
+
+	var allItems []GHIssue
+	if err := json.NewDecoder(resp.Body).Decode(&allItems); err != nil {
+		return nil, fmt.Errorf("failed to decode repo issues json: %w", err)
+	}
+
+	// Filter out pull requests
+	issues := make([]GHIssue, 0, len(allItems))
+	for _, item := range allItems {
+		if item.PullRequest == nil {
+			issues = append(issues, item)
+		}
+	}
+
+	return issues, nil
+}
