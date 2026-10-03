@@ -1472,3 +1472,125 @@ func TestService_FailJobAndSnapshot_LogsCleanupErrors(t *testing.T) {
 		t.Errorf("expected cleanup job failure to be logged, log output: %s", logOutput)
 	}
 }
+
+func TestService_ProcessIngestion_DependencyEdgePersistenceFailure_FailsAndNotReady(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_edge_failure")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	repoID := uuid.New()
+	snapshotID := uuid.New()
+	jobID := uuid.New()
+	now := time.Now()
+
+	var recordedSnapshotStatus string
+	var recordedJobStatus string
+
+	testRepoDriver.mu.Lock()
+	testRepoDriver.handler = func(query string, args []driver.NamedValue) (driver.Rows, driver.Result, error) {
+		if strings.Contains(query, "FROM analysis_jobs") && strings.Contains(query, "WHERE id = $1") {
+			return &fakeRepoRows{
+				cols: []string{"id", "type", "snapshot_id", "status", "stage", "progress_percent", "error_message", "retry_count", "created_at", "updated_at"},
+				data: [][]driver.Value{
+					{jobID.String(), string(domain.JobTypeSnapshotIngest), snapshotID.String(), string(domain.JobStatusQueued), string(domain.JobStageInitializing), 0.0, nil, 0, now, now},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "FROM repository_snapshots s") {
+			return &fakeRepoRows{
+				cols: []string{
+					"s.id", "s.repository_id", "s.commit_sha", "s.ref_name", "s.status", "s.total_files", "s.total_lines", "primary_language", "s.analyzed_at", "s.expires_at", "s.created_at",
+					"r.id", "r.github_id", "r.owner", "r.name", "r.default_branch", "r.is_private", "r.created_at", "r.updated_at",
+				},
+				data: [][]driver.Value{
+					{
+						snapshotID.String(), repoID.String(), "commit", "main", string(domain.SnapshotStatusQueued), 0, 0, nil, nil, nil, now,
+						repoID.String(), int64(123), "owner", "repo", "main", false, now, now,
+					},
+				},
+			}, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "INSERT INTO repository_files") {
+			return &fakeRepoRows{
+				cols: []string{"id", "path"},
+				data: [][]driver.Value{{uuid.New().String(), "main.go"}},
+			}, driver.RowsAffected(1), nil
+		}
+		// Code symbols insertion succeeds
+		if strings.Contains(query, "INSERT INTO code_symbols") {
+			return nil, driver.RowsAffected(1), nil
+		}
+		// Dependency edges insertion FAILS!
+		if strings.Contains(query, "INSERT INTO dependency_edges") {
+			return nil, nil, errors.New("simulated fatal DB error during dependency edge insertion")
+		}
+		if strings.Contains(query, "UPDATE repository_snapshots SET status = $2") {
+			if len(args) >= 2 {
+				if s, ok := args[1].Value.(string); ok {
+					recordedSnapshotStatus = s
+				}
+			}
+			return nil, driver.RowsAffected(1), nil
+		}
+		if strings.Contains(query, "UPDATE analysis_jobs") && strings.Contains(query, "status = 'FAILED'") {
+			recordedJobStatus = "FAILED"
+			return nil, driver.RowsAffected(1), nil
+		}
+		return &fakeRepoRows{}, driver.RowsAffected(1), nil
+	}
+	testRepoDriver.mu.Unlock()
+
+	goCode := "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(1) }\n"
+	files := []git.FileEntry{
+		{Path: "main.go", Extension: ".go", Language: "Go", SizeBytes: len(goCode), LineCount: 5, SHA256Hash: "h1", Content: goCode},
+	}
+	fetcher := git.NewMockFetcher("commit", files)
+	jm := jobs.NewJobManager(db, 1, 5, nil, nil)
+	svc := repo.NewService(db, fetcher, jm, nil)
+
+	err = svc.ProcessIngestion(context.Background(), jobID)
+	if err == nil {
+		t.Fatal("expected ProcessIngestion to fail on dependency edge insertion error, got nil")
+	}
+
+	if recordedSnapshotStatus != string(domain.SnapshotStatusFailed) {
+		t.Errorf("expected snapshot status FAILED, got: %s", recordedSnapshotStatus)
+	}
+	if recordedJobStatus != "FAILED" {
+		t.Errorf("expected job status FAILED, got: %s", recordedJobStatus)
+	}
+}
+
+func TestService_GetCandidateImpact_Validation(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_impact_validation")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	svc := repo.NewService(db, nil, nil, nil)
+
+	// Missing repo in db -> should return error
+	_, err = svc.GetCandidateImpact(context.Background(), "owner", "nonexistent", "main", "main.go")
+	if err == nil {
+		t.Error("expected error for nonexistent repo, got nil")
+	}
+}
+
+func TestService_GetFeatureTraces_Validation(t *testing.T) {
+	db, err := sql.Open("fake_repo_driver", "test_traces_validation")
+	if err != nil {
+		t.Fatalf("failed to open fake db: %v", err)
+	}
+	defer db.Close()
+
+	svc := repo.NewService(db, nil, nil, nil)
+
+	// Missing repo in db -> should return error
+	_, err = svc.GetFeatureTraces(context.Background(), "owner", "nonexistent", "main")
+	if err == nil {
+		t.Error("expected error for nonexistent repo, got nil")
+	}
+}

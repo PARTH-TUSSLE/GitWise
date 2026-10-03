@@ -15,6 +15,7 @@ import (
 	"github.com/gitwise/backend/internal/analysis/typescript"
 	"github.com/gitwise/backend/internal/domain"
 	"github.com/gitwise/backend/internal/git"
+	"github.com/gitwise/backend/internal/graph"
 	"github.com/gitwise/backend/internal/jobs"
 	"github.com/google/uuid"
 )
@@ -25,6 +26,9 @@ type Service struct {
 	fetcher          git.Fetcher
 	jobManager       *jobs.JobManager
 	analyzerRegistry *analysis.Registry
+	graphSvc         *graph.Service
+	graphResolver    *graph.Resolver
+	traceBuilder     *graph.FeatureTraceBuilder
 	logger           *slog.Logger
 }
 
@@ -43,6 +47,9 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 		fetcher:          fetcher,
 		jobManager:       jobManager,
 		analyzerRegistry: registry,
+		graphSvc:         graph.NewService(db, logger),
+		graphResolver:    graph.NewResolver(),
+		traceBuilder:     graph.NewFeatureTraceBuilder(db),
 		logger:           logger,
 	}
 
@@ -57,6 +64,16 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 // SetAnalyzerRegistry allows setting a custom analyzer registry (for testing or plugins).
 func (s *Service) SetAnalyzerRegistry(r *analysis.Registry) {
 	s.analyzerRegistry = r
+}
+
+// SetGraphService allows setting a custom graph service (for testing).
+func (s *Service) SetGraphService(g *graph.Service) {
+	s.graphSvc = g
+}
+
+// SetTraceBuilder allows setting a custom feature trace builder (for testing).
+func (s *Service) SetTraceBuilder(tb *graph.FeatureTraceBuilder) {
+	s.traceBuilder = tb
 }
 
 // Ingest triggers or returns an existing snapshot ingestion job for a repository.
@@ -219,6 +236,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 	_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageAnalyzingAST, 75.0, 0, len(files), "Analyzing Go and TypeScript source structures")
 
 	var allSymbols []domain.CodeSymbol
+	analysisMap := make(map[string]*analysis.FileAnalysisResult)
 	if s.analyzerRegistry != nil {
 		for _, f := range files {
 			if f.IsBinary || f.Content == "" {
@@ -237,6 +255,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 				}
 			}
 			if res != nil {
+				analysisMap[f.Path] = res
 				if len(res.ParseErrors) > 0 {
 					s.logger.Warn("Structural analysis warning",
 						slog.String("path", f.Path),
@@ -262,6 +281,36 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 		if err := s.persistSymbols(ctx, snapshot.ID, allSymbols); err != nil {
 			s.failJobAndSnapshot(jobID, &snapshot.ID, fmt.Sprintf("failed to persist code symbols: %v", err))
 			return fmt.Errorf("failed to persist code symbols: %w", err)
+		}
+	}
+
+	// 7b. Resolve and persist Code Intelligence Graph Dependency Edges
+	if s.graphResolver != nil && s.graphSvc != nil {
+		repoFiles := make([]domain.RepositoryFile, len(files))
+		for i, f := range files {
+			rfID := uuid.Nil
+			if id, ok := pathToFileID[f.Path]; ok {
+				rfID = id
+			}
+			contentStr := f.Content
+			repoFiles[i] = domain.RepositoryFile{
+				ID:         rfID,
+				SnapshotID: snapshot.ID,
+				Path:       f.Path,
+				Extension:  f.Extension,
+				Language:   f.Language,
+				SizeBytes:  f.SizeBytes,
+				LineCount:  f.LineCount,
+				SHA256Hash: f.SHA256Hash,
+				Content:    &contentStr,
+				IsBinary:   f.IsBinary,
+			}
+		}
+
+		edges := s.graphResolver.ResolveSnapshotEdges(snapshot.ID, repoFiles, analysisMap)
+		if err := s.graphSvc.PersistEdges(ctx, snapshot.ID, edges); err != nil {
+			s.failJobAndSnapshot(jobID, &snapshot.ID, fmt.Sprintf("failed to persist dependency edges: %v", err))
+			return fmt.Errorf("failed to persist dependency edges: %w", err)
 		}
 	}
 
@@ -576,7 +625,8 @@ func (s *Service) GetSnapshotSymbols(ctx context.Context, owner, repoName, commi
 	return symbols, nil
 }
 
-// GetSubsystems computes explainable path-based subsystems from the snapshot files and symbols.
+// GetSubsystems computes explainable path-based subsystems from the snapshot files and symbols,
+// enriched with deterministic inter-subsystem connection edges.
 func (s *Service) GetSubsystems(ctx context.Context, owner, repoName, ref string) ([]domain.SubsystemNode, error) {
 	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
 	if err != nil {
@@ -593,7 +643,62 @@ func (s *Service) GetSubsystems(ctx context.Context, owner, repoName, ref string
 		return nil, err
 	}
 
-	return analysis.ClassifySubsystems(files, symbols), nil
+	subsystems := analysis.ClassifySubsystems(files, symbols)
+
+	// Enrich with real graph connections if graph service is active
+	if s.graphSvc != nil {
+		if conns, err := s.graphSvc.GetSubsystemConnections(ctx, snap.ID); err == nil && len(conns) > 0 {
+			for i := range subsystems {
+				if targets, ok := conns[subsystems[i].ID]; ok && len(targets) > 0 {
+					subsystems[i].Connections = targets
+				}
+			}
+		}
+	}
+
+	return subsystems, nil
+}
+
+// GetCandidateImpact computes candidate blast-radius impact analysis for a file in a snapshot.
+func (s *Service) GetCandidateImpact(ctx context.Context, owner, repoName, ref, filePath string) (*domain.CandidateImpactReport, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.graphSvc == nil {
+		return nil, errors.New("graph service is not configured")
+	}
+
+	return s.graphSvc.GetCandidateImpact(ctx, snap.ID, filePath)
+}
+
+// GetFeatureTraces returns verifiable end-to-end execution flows across subsystems.
+func (s *Service) GetFeatureTraces(ctx context.Context, owner, repoName, ref string) ([]domain.FeatureTrace, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.traceBuilder == nil {
+		return nil, errors.New("feature trace builder is not configured")
+	}
+
+	return s.traceBuilder.BuildFeatureTraces(ctx, snap.ID)
+}
+
+// GetFeatureTraceByID returns a specific feature trace for a repository snapshot.
+func (s *Service) GetFeatureTraceByID(ctx context.Context, owner, repoName, ref, traceID string) (*domain.FeatureTrace, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.traceBuilder == nil {
+		return nil, errors.New("feature trace builder is not configured")
+	}
+
+	return s.traceBuilder.GetFeatureTraceByID(ctx, snap.ID, traceID)
 }
 
 // GetTree returns a hierarchical directory tree with extracted symbol counts.

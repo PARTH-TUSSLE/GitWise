@@ -108,4 +108,21 @@ func StartServer() error {
 	if err := svc.ProcessIngestion(ctx, job.ID); err != nil {
 		t.Fatalf("re-running ProcessIngestion against real postgres failed: %v", err)
 	}
+
+	// Verify candidate impact analysis and feature traces in real PostgreSQL
+	impact, err := svc.GetCandidateImpact(ctx, testOwner, testRepo, "main", "server.go")
+	if err != nil {
+		t.Fatalf("failed to query candidate impact from postgres: %v", err)
+	}
+	if impact == nil || impact.TargetFile != "server.go" {
+		t.Errorf("expected candidate impact report for server.go, got: %+v", impact)
+	}
+
+	traces, err := svc.GetFeatureTraces(ctx, testOwner, testRepo, "main")
+	if err != nil {
+		t.Fatalf("failed to query feature traces from postgres: %v", err)
+	}
+	if len(traces) == 0 {
+		t.Error("expected at least 1 feature trace from postgres")
+	}
 }
