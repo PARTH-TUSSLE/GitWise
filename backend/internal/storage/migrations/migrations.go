@@ -51,3 +51,13 @@ var CodeSymbolsUp string
 //
 //go:embed 000005_code_symbols.down.sql
 var CodeSymbolsDown string
+
+// DependencyEdgesUp contains the Phase 5 dependency_edges schema creation SQL.
+//
+//go:embed 000006_dependency_edges.up.sql
+var DependencyEdgesUp string
+
+// DependencyEdgesDown contains the Phase 5 dependency_edges schema rollback SQL.
+//
+//go:embed 000006_dependency_edges.down.sql
+var DependencyEdgesDown string
