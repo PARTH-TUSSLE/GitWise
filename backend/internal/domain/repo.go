@@ -60,9 +60,13 @@ type ContributorGuide struct {
 
 // ChatCitation represents a verified source code reference in chat.
 type ChatCitation struct {
-	File    string  `json:"file"`
-	Line    *int    `json:"line,omitempty"`
-	Snippet *string `json:"snippet,omitempty"`
+	EvidenceID  string  `json:"evidenceId,omitempty"`
+	File        string  `json:"file"`
+	Line        *int    `json:"line,omitempty"`
+	StartLine   int     `json:"startLine,omitempty"`
+	EndLine     int     `json:"endLine,omitempty"`
+	Snippet     *string `json:"snippet,omitempty"`
+	Description string  `json:"description,omitempty"`
 }
 
 // ChatMessage represents a conversation turn in the terminal mentor chat.

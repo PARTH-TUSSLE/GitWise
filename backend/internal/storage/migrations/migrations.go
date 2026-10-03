@@ -71,3 +71,13 @@ var CodeChunksAndEvidenceUp string
 //
 //go:embed 000007_code_chunks_and_evidence.down.sql
 var CodeChunksAndEvidenceDown string
+
+// MentorSessionsAndChatUp contains the Phase 7 mentor_sessions and chat_messages schema creation SQL.
+//
+//go:embed 000008_mentor_sessions_and_chat.up.sql
+var MentorSessionsAndChatUp string
+
+// MentorSessionsAndChatDown contains the Phase 7 mentor_sessions and chat_messages schema rollback SQL.
+//
+//go:embed 000008_mentor_sessions_and_chat.down.sql
+var MentorSessionsAndChatDown string
