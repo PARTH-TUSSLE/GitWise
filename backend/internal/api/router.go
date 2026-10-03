@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/gitwise/backend/internal/ai"
 	"github.com/gitwise/backend/internal/api/handlers"
@@ -25,11 +26,12 @@ import (
 
 type Router struct {
 	chi.Router
-	logger     *slog.Logger
-	cfg        *config.Config
-	db         *postgres.DB
-	JobManager *jobs.JobManager
-	SSEBroker  *sse.Broker
+	logger      *slog.Logger
+	cfg         *config.Config
+	db          *postgres.DB
+	JobManager  *jobs.JobManager
+	SSEBroker   *sse.Broker
+	RateLimiter *middleware.RateLimiter
 }
 
 func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version string) *Router {
@@ -41,6 +43,10 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	r.Use(middleware.StructuredLogger(logger))
 	r.Use(middleware.Recovery(logger))
 	r.Use(middleware.CORSConfig([]string{cfg.FrontendOrigin}))
+
+	// Token bucket rate limiting (120 req/min, burst 150)
+	rateLimiter := middleware.NewRateLimiter(120, 150, time.Minute)
+	r.Use(rateLimiter.Handler)
 
 	// Health check route
 	healthH := handlers.NewHealthHandler(db, version)
@@ -129,12 +135,13 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	})
 
 	return &Router{
-		Router:     r,
-		logger:     logger,
-		cfg:        cfg,
-		db:         db,
-		JobManager: jobManager,
-		SSEBroker:  sseBroker,
+		Router:      r,
+		logger:      logger,
+		cfg:         cfg,
+		db:          db,
+		JobManager:  jobManager,
+		SSEBroker:   sseBroker,
+		RateLimiter: rateLimiter,
 	}
 }
 

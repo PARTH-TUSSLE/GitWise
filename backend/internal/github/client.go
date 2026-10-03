@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -59,30 +60,76 @@ func NewClient(baseURL, token string, logger *slog.Logger) *Client {
 }
 
 // Do executes an authenticated or anonymous HTTP request to GitHub and tracks rate limits.
+// It applies exponential backoff retry on transient 5xx server errors.
 func (c *Client) Do(ctx context.Context, method, endpoint string, body io.Reader) (*http.Response, error) {
 	url := endpoint
 	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
 		url = fmt.Sprintf("%s/%s", c.baseURL, strings.TrimLeft(endpoint, "/"))
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to construct request: %w", err)
+	var bodyBytes []byte
+	if body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
 	}
 
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "GitWise-Backend/2.1")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	const maxRetries = 2
+	var lastResp *http.Response
+	var lastErr error
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(100*(1<<attempt)) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		var reqBody io.Reader
+		if bodyBytes != nil {
+			reqBody = bytes.NewReader(bodyBytes)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("failed to construct request: %w", err)
+		}
+
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		req.Header.Set("User-Agent", "GitWise-Backend/2.1")
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		c.updateRateLimit(resp.Header)
+
+		// Retry on transient gateway/server errors (502, 503, 504)
+		if resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout {
+			_ = resp.Body.Close()
+			lastResp = resp
+			continue
+		}
+
+		return resp, nil
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("github api request failed: %w", err)
+	if lastErr != nil {
+		return nil, fmt.Errorf("github api request failed after retries: %w", lastErr)
 	}
-
-	c.updateRateLimit(resp.Header)
-	return resp, nil
+	return lastResp, nil
 }
 
 // updateRateLimit extracts rate-limit tracking headers from the response.
