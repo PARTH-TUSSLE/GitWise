@@ -14,6 +14,7 @@ import (
 	"github.com/gitwise/backend/internal/github"
 	"github.com/gitwise/backend/internal/service/gitstat"
 	"github.com/gitwise/backend/internal/service/issue"
+	"github.com/gitwise/backend/internal/service/pr"
 	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -609,5 +610,60 @@ func TestIssueHandler_InvalidIssueNumberReturns400(t *testing.T) {
 	r.ServeHTTP(rec2, req2)
 	if rec2.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for negative issue number, got %d", rec2.Code)
+	}
+}
+
+func TestPRHandler_NilServiceReturns503(t *testing.T) {
+	h := handlers.NewPRHandler(nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/pr/{owner}/{repo}", h.GetPullRequests)
+	r.Get("/api/v1/pr/{owner}/{repo}/{number}", h.GetPullRequest)
+	r.Post("/api/v1/pr/{owner}/{repo}/{number}/review", h.ReviewPullRequest)
+
+	// GetPullRequests 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pr/owner/repo", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for GetPullRequests when service is nil, got %d", rec.Code)
+	}
+
+	// GetPullRequest 503
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/pr/owner/repo/1", nil)
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for GetPullRequest when service is nil, got %d", rec2.Code)
+	}
+
+	// ReviewPullRequest 503
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/pr/owner/repo/1/review", nil)
+	rec3 := httptest.NewRecorder()
+	r.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for ReviewPullRequest when service is nil, got %d", rec3.Code)
+	}
+}
+
+func TestPRHandler_InvalidPRNumberReturns400(t *testing.T) {
+	h := handlers.NewPRHandler(&pr.Service{}, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/pr/{owner}/{repo}/{number}", h.GetPullRequest)
+	r.Post("/api/v1/pr/{owner}/{repo}/{number}/review", h.ReviewPullRequest)
+
+	// Non-numeric PR number
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/pr/owner/repo/not-a-number", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-numeric pr number, got %d", rec.Code)
+	}
+
+	// Negative PR number
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/pr/owner/repo/-10/review", nil)
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative pr number, got %d", rec2.Code)
 	}
 }

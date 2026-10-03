@@ -6,3 +6,4 @@ export * from "./client";
 export * from "./gitstat";
 export * from "./repositories";
 export * from "./issues";
+export * from "./pr";

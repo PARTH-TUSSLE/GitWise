@@ -16,6 +16,7 @@ import (
 	"github.com/gitwise/backend/internal/retrieval"
 	"github.com/gitwise/backend/internal/service/gitstat"
 	"github.com/gitwise/backend/internal/service/issue"
+	"github.com/gitwise/backend/internal/service/pr"
 	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/gitwise/backend/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
@@ -69,6 +70,7 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 	var jobManager *jobs.JobManager
 	var repoSvc *repo.Service
 	var issueSvc *issue.Service
+	var prSvc *pr.Service
 
 	if db != nil && db.DB != nil {
 		jobManager = jobs.NewJobManager(db.DB, 4, 128, logger, sseBroker)
@@ -78,11 +80,13 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		retrievalSvc := retrieval.NewService(db.DB, mockEmbedder, logger)
 		graphSvc := graph.NewService(db.DB, logger)
 		issueSvc = issue.NewService(db.DB, ghClient, retrievalSvc, graphSvc, aiClient, logger)
+		prSvc = pr.NewService(db.DB, ghClient, aiClient, logger)
 	}
 
 	gitstatH := handlers.NewGitStatHandler(gitstatSvc, logger)
 	repoH := handlers.NewRepoHandler(repoSvc, jobManager, sseBroker, logger)
 	issueH := handlers.NewIssueHandler(issueSvc, logger)
+	prH := handlers.NewPRHandler(prSvc, logger)
 
 	r.Route("/api/v1", func(v1 chi.Router) {
 		// Telemetry & GITSTAT routes
@@ -113,6 +117,11 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		v1.Get("/issues/{owner}/{repo}", issueH.GetIssues)
 		v1.Get("/issues/{owner}/{repo}/{number}", issueH.GetIssue)
 		v1.Post("/issues/{owner}/{repo}/{number}/blueprint", issueH.GenerateBlueprint)
+
+		// PR Intelligence & Semantic Review (Phase 9)
+		v1.Get("/pr/{owner}/{repo}", prH.GetPullRequests)
+		v1.Get("/pr/{owner}/{repo}/{number}", prH.GetPullRequest)
+		v1.Post("/pr/{owner}/{repo}/{number}/review", prH.ReviewPullRequest)
 
 		// Background Jobs & SSE streaming (Phase 3)
 		v1.Get("/jobs/{id}", repoH.GetJob)

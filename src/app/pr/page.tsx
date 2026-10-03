@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { PR_DATABASE, PullRequestModel } from "@/lib/prData";
+import { fetchPullRequests } from "@/lib/api";
 import { PRCommandBar } from "@/components/pr/PRCommandBar";
 import { PRRail } from "@/components/pr/PRRail";
 import { ArchitecturalShiftMatrix } from "@/components/pr/ArchitecturalShiftMatrix";
@@ -18,8 +19,27 @@ export default function PRReviewerPage() {
   const [activeModalFile, setActiveModalFile] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const repoPRs = PR_DATABASE[currentRepo] || PR_DATABASE["vercel/next.js"];
-  const currentPR = repoPRs.find((p) => p.id === selectedPRId) || repoPRs[0];
+  const [repoPRs, setRepoPRs] = useState<PullRequestModel[]>(
+    PR_DATABASE[currentRepo] || PR_DATABASE["vercel/next.js"]
+  );
+  const currentPR = repoPRs.find((p) => p.id === selectedPRId) || repoPRs[0] || PR_DATABASE["vercel/next.js"][0];
+
+  useEffect(() => {
+    let isCancelled = false;
+    const parts = currentRepo.split("/");
+    const owner = parts[0] || "vercel";
+    const repo = parts[1] || "next.js";
+
+    fetchPullRequests(owner, repo).then((data) => {
+      if (!isCancelled && data && data.length > 0) {
+        setRepoPRs(data);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentRepo]);
 
   // Reset selected PR when repo changes
   useEffect(() => {
