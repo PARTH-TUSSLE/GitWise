@@ -13,6 +13,7 @@ import (
 	"github.com/gitwise/backend/internal/domain"
 	"github.com/gitwise/backend/internal/github"
 	"github.com/gitwise/backend/internal/service/gitstat"
+	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -412,5 +413,62 @@ func TestRepoHandler_GetTree(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_GetFeatureTraces(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/traces", h.GetFeatureTraces)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/traces", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_GetFeatureTraceByID(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/traces/{traceId}", h.GetFeatureTraceByID)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/traces/trace-123", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+}
+
+func TestRepoHandler_GetCandidateImpact(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/impact", h.GetCandidateImpact)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/impact?file=main.go", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+
+	// Missing file param -> 400
+	hWithSvc := handlers.NewRepoHandler(&repo.Service{}, nil, nil, nil)
+	r2 := chi.NewRouter()
+	r2.Get("/api/v1/repositories/{owner}/{repo}/impact", hWithSvc.GetCandidateImpact)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/impact", nil)
+	rec2 := httptest.NewRecorder()
+	r2.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when file param missing, got %d", rec2.Code)
 	}
 }

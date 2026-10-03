@@ -71,6 +71,11 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		v1.Get("/repositories/{owner}/{repo}/subsystems", repoH.GetSubsystems)
 		v1.Get("/repositories/{owner}/{repo}/tree", repoH.GetTree)
 
+		// Code Intelligence Graph & Candidate Impact (Phase 5)
+		v1.Get("/repositories/{owner}/{repo}/traces", repoH.GetFeatureTraces)
+		v1.Get("/repositories/{owner}/{repo}/traces/{traceId}", repoH.GetFeatureTraceByID)
+		v1.Get("/repositories/{owner}/{repo}/impact", repoH.GetCandidateImpact)
+
 		// Background Jobs & SSE streaming (Phase 3)
 		v1.Get("/jobs/{id}", repoH.GetJob)
 		v1.Get("/jobs/{id}/stream", repoH.GetJobStream)

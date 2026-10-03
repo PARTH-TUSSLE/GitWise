@@ -277,6 +277,111 @@ func (h *RepoHandler) GetTree(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(tree)
 }
 
+// GetFeatureTraces handles GET /api/v1/repositories/{owner}/{repo}/traces
+func (h *RepoHandler) GetFeatureTraces(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	ref := r.URL.Query().Get("ref")
+
+	if owner == "" || repo == "" {
+		http.Error(w, `{"error":"owner and repo are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	traces, err := h.repoSvc.GetFeatureTraces(r.Context(), owner, repo, ref)
+	if err != nil {
+		h.logger.Error("Failed to fetch feature traces",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, `{"error":"Failed to retrieve feature traces"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if traces == nil {
+		traces = []domain.FeatureTrace{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(traces)
+}
+
+// GetFeatureTraceByID handles GET /api/v1/repositories/{owner}/{repo}/traces/{traceId}
+func (h *RepoHandler) GetFeatureTraceByID(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	traceID := chi.URLParam(r, "traceId")
+	ref := r.URL.Query().Get("ref")
+
+	if owner == "" || repo == "" || traceID == "" {
+		http.Error(w, `{"error":"owner, repo, and traceId are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	trace, err := h.repoSvc.GetFeatureTraceByID(r.Context(), owner, repo, ref, traceID)
+	if err != nil {
+		h.logger.Warn("Feature trace lookup failed",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("trace_id", traceID),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, `{"error":"Feature trace not found"}`, http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(trace)
+}
+
+// GetCandidateImpact handles GET /api/v1/repositories/{owner}/{repo}/impact?file={path}
+func (h *RepoHandler) GetCandidateImpact(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	filePath := r.URL.Query().Get("file")
+	ref := r.URL.Query().Get("ref")
+
+	if owner == "" || repo == "" {
+		http.Error(w, `{"error":"owner and repo are required"}`, http.StatusBadRequest)
+		return
+	}
+	if filePath == "" {
+		http.Error(w, `{"error":"file query parameter is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	report, err := h.repoSvc.GetCandidateImpact(r.Context(), owner, repo, ref, filePath)
+	if err != nil {
+		h.logger.Error("Candidate impact analysis failed",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("file", filePath),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(report)
+}
+
 func (h *RepoHandler) GetRepository(w http.ResponseWriter, r *http.Request) {
 	owner := chi.URLParam(r, "owner")
 	repo := chi.URLParam(r, "repo")
