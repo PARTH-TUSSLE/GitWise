@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: gitwise-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gitwise}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gitwise}
+      POSTGRES_DB: ${POSTGRES_DB:-gitwise}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/internal/storage/migrations/000001_init_schema.up.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gitwise} -d ${POSTGRES_DB:-gitwise}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: gitwise-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-gitwise}:${POSTGRES_PASSWORD:-gitwise}@postgres:5432/${POSTGRES_DB:-gitwise}?sslmode=disable
+      APP_ENV: production
+      LOG_LEVEL: info
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: "8080"
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      AI_PROVIDER: ${AI_PROVIDER:-groq}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-llama-3.3-70b-versatile}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+
+volumes:
+  pgdata:
+    driver: local
