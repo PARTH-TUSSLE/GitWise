@@ -32,6 +32,11 @@ type ChatRequest struct {
 	Message   string     `json:"message"`
 	Stream    bool       `json:"stream,omitempty"`
 	TopK      int        `json:"topK,omitempty"`
+
+	// Optional runtime model/provider overrides
+	Provider string `json:"provider,omitempty"` // "groq", "ollama", "openrouter", "openai", "gemini"
+	Model    string `json:"model,omitempty"`    // e.g. "llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3.2"
+	BaseURL  string `json:"baseUrl,omitempty"`  // custom proxy or local endpoint
 }
 
 // ChatResponse is the response returned for synchronous chat interactions.

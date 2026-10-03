@@ -17,6 +17,14 @@ type Config struct {
 	LogLevel         string `env:"LOG_LEVEL" envDefault:"info"`
 	GitHubToken      string `env:"GITHUB_TOKEN"`
 	GitHubAPIBaseURL string `env:"GITHUB_API_BASE_URL" envDefault:"https://api.github.com"`
+
+	// AI Provider & Model Configuration (Groq, Ollama, OpenRouter, OpenAI, Gemini, etc.)
+	AIProvider   string `env:"AI_PROVIDER" envDefault:"groq"`
+	AIAPIKey     string `env:"AI_API_KEY"`
+	AIBaseURL    string `env:"AI_BASE_URL"`
+	AIModel      string `env:"AI_MODEL"`
+	GroqAPIKey   string `env:"GROQ_API_KEY"`
+	GeminiAPIKey string `env:"GEMINI_API_KEY"`
 }
 
 // Load parses environment variables into Config with fail-fast validation.
@@ -27,6 +35,25 @@ func Load() (*Config, error) {
 	cfg := &Config{}
 	if err := env.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse environment configuration: %w", err)
+	}
+
+	// Auto-detect and normalize AI provider credentials
+	if cfg.AIAPIKey == "" {
+		if cfg.GroqAPIKey != "" {
+			cfg.AIAPIKey = cfg.GroqAPIKey
+			if cfg.AIProvider == "" {
+				cfg.AIProvider = "groq"
+			}
+		} else if cfg.GeminiAPIKey != "" {
+			cfg.AIAPIKey = cfg.GeminiAPIKey
+			if cfg.AIProvider == "" || cfg.AIProvider == "groq" {
+				cfg.AIProvider = "gemini"
+			}
+		}
+	}
+
+	if cfg.AIProvider == "groq" && cfg.AIModel == "" {
+		cfg.AIModel = "llama-3.3-70b-versatile"
 	}
 
 	if cfg.HTTPPort == "" {
