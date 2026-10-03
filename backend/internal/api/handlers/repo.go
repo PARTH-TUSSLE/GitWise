@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gitwise/backend/internal/api/sse"
@@ -380,6 +381,55 @@ func (h *RepoHandler) GetCandidateImpact(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(report)
+}
+
+// GetSearch handles GET /api/v1/repositories/{owner}/{repo}/search?q={query}&top_k={topK}&ref={ref}
+func (h *RepoHandler) GetSearch(w http.ResponseWriter, r *http.Request) {
+	if h.repoSvc == nil {
+		http.Error(w, `{"error":"Repository service is not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	owner := chi.URLParam(r, "owner")
+	repo := chi.URLParam(r, "repo")
+	query := r.URL.Query().Get("q")
+	ref := r.URL.Query().Get("ref")
+	topKStr := r.URL.Query().Get("top_k")
+
+	if owner == "" || repo == "" {
+		http.Error(w, `{"error":"owner and repo are required"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(query) == "" {
+		http.Error(w, `{"error":"query parameter q is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	topK := 5
+	if topKStr != "" {
+		if val, err := strconv.Atoi(topKStr); err == nil && val > 0 && val <= 50 {
+			topK = val
+		}
+	}
+
+	results, err := h.repoSvc.Search(r.Context(), owner, repo, ref, query, topK)
+	if err != nil {
+		h.logger.Error("Hybrid search failed",
+			slog.String("owner", owner),
+			slog.String("repo", repo),
+			slog.String("query", query),
+			slog.String("error", err.Error()),
+		)
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	if results == nil {
+		results = []domain.SearchResult{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(results)
 }
 
 func (h *RepoHandler) GetRepository(w http.ResponseWriter, r *http.Request) {

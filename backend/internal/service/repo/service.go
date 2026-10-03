@@ -14,9 +14,11 @@ import (
 	"github.com/gitwise/backend/internal/analysis/golang"
 	"github.com/gitwise/backend/internal/analysis/typescript"
 	"github.com/gitwise/backend/internal/domain"
+	"github.com/gitwise/backend/internal/evidence"
 	"github.com/gitwise/backend/internal/git"
 	"github.com/gitwise/backend/internal/graph"
 	"github.com/gitwise/backend/internal/jobs"
+	"github.com/gitwise/backend/internal/retrieval"
 	"github.com/google/uuid"
 )
 
@@ -29,6 +31,9 @@ type Service struct {
 	graphSvc         *graph.Service
 	graphResolver    *graph.Resolver
 	traceBuilder     *graph.FeatureTraceBuilder
+	retrievalSvc     *retrieval.Service
+	chunker          *retrieval.Chunker
+	evidenceStore    *evidence.Store
 	logger           *slog.Logger
 }
 
@@ -42,6 +47,11 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 	registry.Register(golang.NewGoAnalyzer())
 	registry.Register(typescript.NewTypeScriptAnalyzer())
 
+	mockEmbedder := retrieval.NewMockEmbedder()
+	retrievalSvc := retrieval.NewService(db, mockEmbedder, logger)
+	chunker := retrieval.NewChunker()
+	evidenceStore := evidence.NewStore(db, logger)
+
 	svc := &Service{
 		db:               db,
 		fetcher:          fetcher,
@@ -50,6 +60,9 @@ func NewService(db *sql.DB, fetcher git.Fetcher, jobManager *jobs.JobManager, lo
 		graphSvc:         graph.NewService(db, logger),
 		graphResolver:    graph.NewResolver(),
 		traceBuilder:     graph.NewFeatureTraceBuilder(db),
+		retrievalSvc:     retrievalSvc,
+		chunker:          chunker,
+		evidenceStore:    evidenceStore,
 		logger:           logger,
 	}
 
@@ -74,6 +87,21 @@ func (s *Service) SetGraphService(g *graph.Service) {
 // SetTraceBuilder allows setting a custom feature trace builder (for testing).
 func (s *Service) SetTraceBuilder(tb *graph.FeatureTraceBuilder) {
 	s.traceBuilder = tb
+}
+
+// SetRetrievalService allows setting a custom retrieval service (for testing).
+func (s *Service) SetRetrievalService(r *retrieval.Service) {
+	s.retrievalSvc = r
+}
+
+// SetChunker allows setting a custom code chunker (for testing).
+func (s *Service) SetChunker(c *retrieval.Chunker) {
+	s.chunker = c
+}
+
+// SetEvidenceStore allows setting a custom evidence store (for testing).
+func (s *Service) SetEvidenceStore(e *evidence.Store) {
+	s.evidenceStore = e
 }
 
 // Ingest triggers or returns an existing snapshot ingestion job for a repository.
@@ -264,6 +292,7 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 				}
 				for _, raw := range res.Symbols {
 					allSymbols = append(allSymbols, domain.CodeSymbol{
+						ID:         uuid.New(),
 						SnapshotID: snapshot.ID,
 						FileID:     fileID,
 						FilePath:   f.Path,
@@ -284,33 +313,52 @@ func (s *Service) ProcessIngestion(ctx context.Context, jobID uuid.UUID) error {
 		}
 	}
 
+	// Construct snapshot repository files for graph resolution and semantic chunking
+	repoFiles := make([]domain.RepositoryFile, len(files))
+	for i, f := range files {
+		rfID := uuid.Nil
+		if id, ok := pathToFileID[f.Path]; ok {
+			rfID = id
+		}
+		contentStr := f.Content
+		repoFiles[i] = domain.RepositoryFile{
+			ID:         rfID,
+			SnapshotID: snapshot.ID,
+			Path:       f.Path,
+			Extension:  f.Extension,
+			Language:   f.Language,
+			SizeBytes:  f.SizeBytes,
+			LineCount:  f.LineCount,
+			SHA256Hash: f.SHA256Hash,
+			Content:    &contentStr,
+			IsBinary:   f.IsBinary,
+		}
+	}
+
 	// 7b. Resolve and persist Code Intelligence Graph Dependency Edges
 	if s.graphResolver != nil && s.graphSvc != nil {
-		repoFiles := make([]domain.RepositoryFile, len(files))
-		for i, f := range files {
-			rfID := uuid.Nil
-			if id, ok := pathToFileID[f.Path]; ok {
-				rfID = id
-			}
-			contentStr := f.Content
-			repoFiles[i] = domain.RepositoryFile{
-				ID:         rfID,
-				SnapshotID: snapshot.ID,
-				Path:       f.Path,
-				Extension:  f.Extension,
-				Language:   f.Language,
-				SizeBytes:  f.SizeBytes,
-				LineCount:  f.LineCount,
-				SHA256Hash: f.SHA256Hash,
-				Content:    &contentStr,
-				IsBinary:   f.IsBinary,
-			}
-		}
-
 		edges := s.graphResolver.ResolveSnapshotEdges(snapshot.ID, repoFiles, analysisMap)
 		if err := s.graphSvc.PersistEdges(ctx, snapshot.ID, edges); err != nil {
 			s.failJobAndSnapshot(jobID, &snapshot.ID, fmt.Sprintf("failed to persist dependency edges: %v", err))
 			return fmt.Errorf("failed to persist dependency edges: %w", err)
+		}
+	}
+
+	// 7c. Semantic Code Chunking, Dense Vector Embeddings, and Chunk Persistence
+	if s.retrievalSvc != nil && s.chunker != nil {
+		_ = s.jobManager.UpdateProgress(ctx, jobID, domain.JobStageAnalyzingAST, 88.0, len(repoFiles), len(repoFiles), "Generating semantic code chunks and embeddings")
+		var allChunks []domain.CodeChunk
+		for _, rf := range repoFiles {
+			if rf.IsBinary || rf.Content == nil {
+				continue
+			}
+			fileChunks := s.chunker.ChunkFile(rf, allSymbols)
+			allChunks = append(allChunks, fileChunks...)
+		}
+
+		if err := s.retrievalSvc.PersistChunks(ctx, snapshot.ID, allChunks); err != nil {
+			s.failJobAndSnapshot(jobID, &snapshot.ID, fmt.Sprintf("failed to persist code chunks: %v", err))
+			return fmt.Errorf("failed to persist code chunks: %w", err)
 		}
 	}
 
@@ -555,8 +603,8 @@ func (s *Service) persistSymbols(ctx context.Context, snapshotID uuid.UUID, symb
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO code_symbols (snapshot_id, file_id, name, kind, start_line, end_line, signature, is_exported, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		INSERT INTO code_symbols (id, snapshot_id, file_id, name, kind, start_line, end_line, signature, is_exported, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
 		ON CONFLICT (file_id, name, kind, start_line) DO UPDATE
 		SET end_line = EXCLUDED.end_line,
 		    signature = EXCLUDED.signature,
@@ -566,19 +614,25 @@ func (s *Service) persistSymbols(ctx context.Context, snapshotID uuid.UUID, symb
 	}
 	defer stmt.Close()
 
-	for _, sym := range symbols {
+	for i := range symbols {
+		symID := symbols[i].ID
+		if symID == uuid.Nil {
+			symID = uuid.New()
+			symbols[i].ID = symID
+		}
 		_, err := stmt.ExecContext(ctx,
+			symID,
 			snapshotID,
-			sym.FileID,
-			sym.Name,
-			string(sym.Kind),
-			sym.StartLine,
-			sym.EndLine,
-			sym.Signature,
-			sym.IsExported,
+			symbols[i].FileID,
+			symbols[i].Name,
+			string(symbols[i].Kind),
+			symbols[i].StartLine,
+			symbols[i].EndLine,
+			symbols[i].Signature,
+			symbols[i].IsExported,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to insert code symbol %s: %w", sym.Name, err)
+			return fmt.Errorf("failed to insert code symbol %s: %w", symbols[i].Name, err)
 		}
 	}
 
@@ -719,6 +773,34 @@ func (s *Service) GetTree(ctx context.Context, owner, repoName, ref string) ([]d
 	}
 
 	return analysis.BuildRepoTree(files, symbols), nil
+}
+
+// Search executes tiered hybrid code search combining exact symbols, FTS text, and dense vectors.
+func (s *Service) Search(ctx context.Context, owner, repoName, ref, query string, topK int) ([]domain.SearchResult, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.retrievalSvc == nil {
+		return nil, errors.New("retrieval service is not configured")
+	}
+
+	return s.retrievalSvc.HybridSearch(ctx, snap.ID, query, topK)
+}
+
+// AssembleEvidence hydrates and bundles evidence references into an EvidencePackage with verified citations.
+func (s *Service) AssembleEvidence(ctx context.Context, owner, repoName, ref, query string, refs []domain.EvidenceRef) (*domain.EvidencePackage, error) {
+	snap, err := s.resolveSnapshotForRef(ctx, owner, repoName, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.evidenceStore == nil {
+		return nil, errors.New("evidence store is not configured")
+	}
+
+	return s.evidenceStore.AssembleEvidencePackage(ctx, snap.ID, snap.CommitSHA, query, refs)
 }
 
 func (s *Service) resolveSnapshotForRef(ctx context.Context, owner, repoName, ref string) (*domain.RepositorySnapshot, error) {

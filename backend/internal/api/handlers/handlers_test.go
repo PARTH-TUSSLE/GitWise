@@ -472,3 +472,30 @@ func TestRepoHandler_GetCandidateImpact(t *testing.T) {
 		t.Errorf("expected 400 when file param missing, got %d", rec2.Code)
 	}
 }
+
+func TestRepoHandler_GetSearch(t *testing.T) {
+	h := handlers.NewRepoHandler(nil, nil, nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/repositories/{owner}/{repo}/search", h.GetSearch)
+
+	// Missing service -> 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/search?q=test", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when service is nil, got %d", rec.Code)
+	}
+
+	// Missing q param -> 400
+	hWithSvc := handlers.NewRepoHandler(&repo.Service{}, nil, nil, nil)
+	r2 := chi.NewRouter()
+	r2.Get("/api/v1/repositories/{owner}/{repo}/search", hWithSvc.GetSearch)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/repositories/owner/repo/search", nil)
+	rec2 := httptest.NewRecorder()
+	r2.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 when query q is missing, got %d", rec2.Code)
+	}
+}

@@ -76,6 +76,9 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		v1.Get("/repositories/{owner}/{repo}/traces/{traceId}", repoH.GetFeatureTraceByID)
 		v1.Get("/repositories/{owner}/{repo}/impact", repoH.GetCandidateImpact)
 
+		// Tiered Hybrid Retrieval & Search (Phase 6)
+		v1.Get("/repositories/{owner}/{repo}/search", repoH.GetSearch)
+
 		// Background Jobs & SSE streaming (Phase 3)
 		v1.Get("/jobs/{id}", repoH.GetJob)
 		v1.Get("/jobs/{id}/stream", repoH.GetJobStream)
