@@ -13,6 +13,7 @@ import (
 	"github.com/gitwise/backend/internal/domain"
 	"github.com/gitwise/backend/internal/github"
 	"github.com/gitwise/backend/internal/service/gitstat"
+	"github.com/gitwise/backend/internal/service/issue"
 	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -553,5 +554,60 @@ func TestRepoHandler_GetSessionMessages(t *testing.T) {
 
 	if rec2.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 when session ID is invalid, got %d", rec2.Code)
+	}
+}
+
+func TestIssueHandler_NilServiceReturns503(t *testing.T) {
+	h := handlers.NewIssueHandler(nil, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/issues/{owner}/{repo}", h.GetIssues)
+	r.Get("/api/v1/issues/{owner}/{repo}/{number}", h.GetIssue)
+	r.Post("/api/v1/issues/{owner}/{repo}/{number}/blueprint", h.GenerateBlueprint)
+
+	// GetIssues 503
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/owner/repo", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for GetIssues when service is nil, got %d", rec.Code)
+	}
+
+	// GetIssue 503
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/issues/owner/repo/1", nil)
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for GetIssue when service is nil, got %d", rec2.Code)
+	}
+
+	// GenerateBlueprint 503
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/issues/owner/repo/1/blueprint", nil)
+	rec3 := httptest.NewRecorder()
+	r.ServeHTTP(rec3, req3)
+	if rec3.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 for GenerateBlueprint when service is nil, got %d", rec3.Code)
+	}
+}
+
+func TestIssueHandler_InvalidIssueNumberReturns400(t *testing.T) {
+	h := handlers.NewIssueHandler(&issue.Service{}, nil)
+	r := chi.NewRouter()
+	r.Get("/api/v1/issues/{owner}/{repo}/{number}", h.GetIssue)
+	r.Post("/api/v1/issues/{owner}/{repo}/{number}/blueprint", h.GenerateBlueprint)
+
+	// Non-numeric issue number
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/issues/owner/repo/invalid-num", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-numeric issue number, got %d", rec.Code)
+	}
+
+	// Negative issue number
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/issues/owner/repo/-5/blueprint", nil)
+	rec2 := httptest.NewRecorder()
+	r.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative issue number, got %d", rec2.Code)
 	}
 }

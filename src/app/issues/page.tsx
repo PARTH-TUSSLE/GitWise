@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ISSUES_DATABASE, IssueModel } from "@/lib/issueData";
+import { fetchIssues } from "@/lib/api";
 import { IssueCommandBar } from "@/components/issues/IssueCommandBar";
 import { IssueTriageRail } from "@/components/issues/IssueTriageRail";
 import { ContributionPipelineCanvas } from "@/components/issues/ContributionPipelineCanvas";
@@ -17,8 +18,27 @@ export default function IssuePlannerPage() {
   const [activeModalFile, setActiveModalFile] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const repoIssues = ISSUES_DATABASE[currentRepo] || ISSUES_DATABASE["vercel/next.js"];
+  const [repoIssues, setRepoIssues] = useState<IssueModel[]>(
+    ISSUES_DATABASE[currentRepo] || ISSUES_DATABASE["vercel/next.js"]
+  );
   const currentIssue = repoIssues.find((i) => i.id === selectedIssueId) || repoIssues[0];
+
+  useEffect(() => {
+    let isCancelled = false;
+    const parts = currentRepo.split("/");
+    const owner = parts[0] || "vercel";
+    const repo = parts[1] || "next.js";
+
+    fetchIssues(owner, repo).then((data) => {
+      if (!isCancelled && data && data.length > 0) {
+        setRepoIssues(data);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentRepo]);
 
   // Auto-select first issue when switching repos
   useEffect(() => {

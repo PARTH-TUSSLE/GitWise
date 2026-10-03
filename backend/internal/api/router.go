@@ -11,8 +11,11 @@ import (
 	"github.com/gitwise/backend/internal/config"
 	"github.com/gitwise/backend/internal/git"
 	"github.com/gitwise/backend/internal/github"
+	"github.com/gitwise/backend/internal/graph"
 	"github.com/gitwise/backend/internal/jobs"
+	"github.com/gitwise/backend/internal/retrieval"
 	"github.com/gitwise/backend/internal/service/gitstat"
+	"github.com/gitwise/backend/internal/service/issue"
 	"github.com/gitwise/backend/internal/service/repo"
 	"github.com/gitwise/backend/internal/storage/postgres"
 	"github.com/go-chi/chi/v5"
@@ -65,14 +68,21 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 
 	var jobManager *jobs.JobManager
 	var repoSvc *repo.Service
+	var issueSvc *issue.Service
 
 	if db != nil && db.DB != nil {
 		jobManager = jobs.NewJobManager(db.DB, 4, 128, logger, sseBroker)
 		repoSvc = repo.NewService(db.DB, gitFetcher, jobManager, logger, aiClient)
+
+		mockEmbedder := retrieval.NewMockEmbedder()
+		retrievalSvc := retrieval.NewService(db.DB, mockEmbedder, logger)
+		graphSvc := graph.NewService(db.DB, logger)
+		issueSvc = issue.NewService(db.DB, ghClient, retrievalSvc, graphSvc, aiClient, logger)
 	}
 
 	gitstatH := handlers.NewGitStatHandler(gitstatSvc, logger)
 	repoH := handlers.NewRepoHandler(repoSvc, jobManager, sseBroker, logger)
+	issueH := handlers.NewIssueHandler(issueSvc, logger)
 
 	r.Route("/api/v1", func(v1 chi.Router) {
 		// Telemetry & GITSTAT routes
@@ -98,6 +108,11 @@ func NewRouter(cfg *config.Config, db *postgres.DB, logger *slog.Logger, version
 		v1.Post("/repositories/{owner}/{repo}/chat", repoH.Chat)
 		v1.Post("/mentor/{owner}/{repo}/chat", repoH.Chat)
 		v1.Get("/mentor/sessions/{sessionId}/messages", repoH.GetSessionMessages)
+
+		// Issue Intelligence & Implementation Blueprints (Phase 8)
+		v1.Get("/issues/{owner}/{repo}", issueH.GetIssues)
+		v1.Get("/issues/{owner}/{repo}/{number}", issueH.GetIssue)
+		v1.Post("/issues/{owner}/{repo}/{number}/blueprint", issueH.GenerateBlueprint)
 
 		// Background Jobs & SSE streaming (Phase 3)
 		v1.Get("/jobs/{id}", repoH.GetJob)

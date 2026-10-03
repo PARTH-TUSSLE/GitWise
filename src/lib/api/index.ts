@@ -5,3 +5,4 @@ export * from "./config";
 export * from "./client";
 export * from "./gitstat";
 export * from "./repositories";
+export * from "./issues";
