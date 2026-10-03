@@ -61,3 +61,13 @@ var DependencyEdgesUp string
 //
 //go:embed 000006_dependency_edges.down.sql
 var DependencyEdgesDown string
+
+// CodeChunksAndEvidenceUp contains the Phase 6 code_chunks and evidence_refs schema creation SQL.
+//
+//go:embed 000007_code_chunks_and_evidence.up.sql
+var CodeChunksAndEvidenceUp string
+
+// CodeChunksAndEvidenceDown contains the Phase 6 code_chunks and evidence_refs schema rollback SQL.
+//
+//go:embed 000007_code_chunks_and_evidence.down.sql
+var CodeChunksAndEvidenceDown string
